@@ -1,41 +1,28 @@
 # Configuration File Guide
 
 ## Overview
-The annotation tool now supports loading configuration files that set default parameters for:
+
+Config files let you save and restore:
 - Annotation labels and colors
 - STFT (spectrogram) parameters
-- DB transform settings
+- FFT parameters
 - UI preferences
 
 ## Usage
 
-### Loading a Config
-1. **Menu**: File → Load Config... (Ctrl+Shift+O)
-2. Select your JSON config file
-3. All settings will be applied immediately
+| Action | Menu | Shortcut |
+|--------|------|----------|
+| Load config | File → Load Config… | `Ctrl+Shift+O` |
+| Save current config | File → Save Config As… | `Ctrl+Shift+S` |
 
-### Saving Current Config
-1. **Menu**: File → Save Config As... (Ctrl+Shift+S)
-2. Choose a location and filename
-3. Your current settings will be saved as JSON
-
-### Example Config File (`config_example.json`)
+## Example Config File
 
 ```json
 {
   "labels": [
-    {
-      "name": "Walking",
-      "color": [255, 0, 0]
-    },
-    {
-      "name": "Running",
-      "color": [0, 255, 0]
-    },
-    {
-      "name": "Standing",
-      "color": [0, 0, 255]
-    }
+    { "name": "Walking", "color": [255, 0, 0] },
+    { "name": "Running", "color": [0, 200, 0] },
+    { "name": "Standing", "color": [0, 0, 255] }
   ],
   "stft": {
     "window_size": 256,
@@ -60,44 +47,45 @@ The annotation tool now supports loading configuration files that set default pa
 }
 ```
 
-## Configuration Parameters
+## Parameter Reference
 
-### Labels
-- **name**: Label text (e.g., "Walking", "Running")
-- **color**: RGB tuple [R, G, B] where values are 0-255
+### `labels`
+| Key | Type | Description |
+|-----|------|-------------|
+| `name` | string | Label display text |
+| `color` | `[R, G, B]` | RGB color, values 0–255 |
 
-### STFT Parameters
-- **window_size**: FFT window size in samples (64-8192)
-- **overlap**: Window overlap as fraction (0.0-0.9)
-- **window_type**: Window function ("hann", "hamming", "blackman", "bartlett")
-- **use_db**: Convert magnitude to decibels (true/false)
-- **db_ref**: Reference value for dB conversion (typically 1e-10)
-- **vmin**: Minimum value for colormap (dB)
-- **vmax**: Maximum value for colormap (dB)
+### `stft`
+| Key | Type | Description |
+|-----|------|-------------|
+| `window_size` | int | FFT window size in samples (minimum 64, no upper limit) |
+| `overlap` | float | Window overlap fraction (0.0–0.9) |
+| `window_type` | string | `"hann"`, `"hamming"`, `"blackman"`, or `"bartlett"` |
+| `use_db` | bool | Convert magnitude to dB scale |
+| `db_ref` | float | Reference epsilon for `20·log10(magnitude + db_ref)` |
+| `vmin` | float | Lower dB display clip (e.g. `-80`) |
+| `vmax` | float | Upper dB display clip (e.g. `0`) |
 
-### FFT Parameters
-- **nperseg**: Samples per segment
-- **window**: Window function type
+### `fft`
+| Key | Type | Description |
+|-----|------|-------------|
+| `nperseg` | int | Samples per FFT segment (minimum 64, no upper limit) |
+| `window` | string | Window function type (same options as STFT) |
 
-### UI Parameters
-- **plot_height_min**: Minimum plot height in pixels
-- **plot_height_max**: Maximum plot height in pixels
+### `ui`
+| Key | Type | Description |
+|-----|------|-------------|
+| `plot_height_min` | int | Minimum plot height in pixels |
+| `plot_height_max` | int | Maximum plot height in pixels |
 
-### Data Parameters
-- **default_sample_rate**: Default sampling rate in Hz
+### `data`
+| Key | Type | Description |
+|-----|------|-------------|
+| `default_sample_rate` | float | Fallback sample rate in Hz when not in file |
 
 ## Tips
 
-- **Start from template**: Copy `config_example.json` and modify it
-- **Share configs**: Use config files to standardize annotation settings across team
-- **Different datasets**: Create separate configs for different data types
-- **Quick switching**: Keep multiple config files for different annotation scenarios
+- **Share configs** across a team to standardize annotation settings
+- **Per-dataset configs** — keep separate files for different data types or studies
+- Config files only update settings that are present; omitted keys keep their current values
 
-## Workflow Example
-
-1. Load your sensor data
-2. Load appropriate config for that data type
-3. All labels, colors, and STFT settings are applied automatically
-4. Start annotating with consistent settings
-5. Modify settings as needed during annotation
-6. Save updated config for future use

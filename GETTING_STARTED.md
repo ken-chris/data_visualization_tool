@@ -1,129 +1,116 @@
-"""
-Getting Started Guide - Quick start instructions for the Sensor Data Annotation Tool
-"""
-
 # Getting Started
 
 ## Installation
 
-1. **Install Python 3.10 or higher** if not already installed
-   - Download from https://www.python.org/
-   - Make sure to check "Add Python to PATH" during installation
+1. **Install Python 3.10+** — https://www.python.org/ (check "Add Python to PATH")
 
 2. **Install dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
-   
-   Or on Windows, simply double-click **`run.bat`** which will handle everything automatically!
+   On Windows you can also double-click **`run.bat`** which handles this automatically.
 
-3. **Generate sample data** (optional, for testing):
-   ```bash
-   python generate_sample_data.py
-   ```
-
-4. **Run the application:**
+3. **Run the application:**
    ```bash
    python src/main.py
    ```
-   
-   Or on Windows: **double-click `run.bat`**
 
-## Quick Start Guide
+## First Steps
 
-### 1. Load Data
-- Click **File > Open** (or press `Ctrl+O`)
-- Select a data file (CSV, NumPy `.npy`, or HDF5 `.h5`)
-- Sample data is available in `sample_data/` if you ran the generator
+### Load Data
+The app opens on the **Data Mgmt** tab.
 
-### 2. Explore Time Series
-- **Time Series tab** shows your sensor data
-- **Pan**: Click and drag on the plot
-- **Zoom**: Scroll wheel
-- **Select region**: Drag the shaded region selector
+1. Click **Load Data** (or **File > Open** / `Ctrl+O`)
+2. Select a CSV, NumPy (`.npy`), or HDF5 (`.h5`) file
+3. The dataset appears in the Data Mgmt panel with all channels listed
+4. Rename channels and toggle them for FFT/Spectrogram use, then click **Apply**
 
-### 3. View FFT
-- Switch to the **FFT tab**
-- Drag the region selector on the Time Series tab to update the FFT
-- Or enter precise start/end times in the input fields
-- Peak frequencies are displayed below the plot
+Sample data is available in `sample_data/`. To generate more:
+```bash
+python generate_sample_data.py
+```
 
-### 4. View Spectrogram
-- Switch to the **Spectrogram tab**
-- Adjust parameters in the left panel:
-  - **Window Size**: FFT window size (64-8192 samples)
-  - **Overlap**: Window overlap percentage (0-90%)
-  - **Window Type**: hann, hamming, blackman, or bartlett
-- Click **Apply STFT Parameters** to update
+### Explore Data
 
-### 5. Annotate Data (Coming Soon)
-- Define annotation labels in the **Annotation Labels** panel
-- Select a label (it becomes highlighted)
-- Drag to create annotation regions on the Time Series plot
-- Right-click regions to edit or delete
-- Change label colors with the **Change Color** button
+Switch tabs using the tab bar at the top:
 
-### 6. Export Annotations
-- Click **File > Export Annotations** (or press `Ctrl+E`)
-- Choose JSON or CSV format
-- Annotations include: label, start/end times, duration, color, notes
+- **Time Series** — scrollable multi-channel plots; pan (drag), zoom (scroll wheel)
+- **Spectrogram** — STFT heatmap; adjust parameters in the left sidebar and click **Apply STFT Parameters**
+- **FFT** — frequency domain of the current region selection
+
+### Select a Region (Time Series)
+Drag the blue shaded **region selector** on any plot. All channels stay synchronized.
+The selected region is used by:
+- FFT analysis (auto-updates as you drag)
+- Manipulations (apply to the region only)
+
+### Add Channels to a Plot Box
+Each dataset gets a **Plot Box** in the Time Series tab. Click ⚙ on a box to:
+- Add or remove channel traces
+- Set trace color and opacity
+
+### Annotate
+1. Open the **Annotation Labels** collapsible section in the left sidebar (Time Series tab)
+2. Add labels and pick colors
+3. Select a label, drag a region, click **Create Annotation from Region**
+4. Right-click annotations to edit notes or delete
+5. Export with **File > Export Annotations** (`Ctrl+E`)
+
+### Add a Spatial Plot
+1. Click the **`+`** tab
+2. Select **Spatial Data (2D)** and click OK
+3. In the new tab, click **⚙ Settings** to map channels to X, Y, Size, Color, and optionally attach a timestamp file
+4. Use the sliders below and beside the plot to adjust axis ranges and time window
+
+### Apply a Manipulation
+1. Go to **Edit → Manage Manipulations** and enable the manipulations you want
+2. On the **Time Series** tab: select a region, then use the **Manipulations** panel in the left sidebar to pick a channel, configure options, and click **Apply**
+3. On a **Spatial** tab: the manipulation is applied to the full dataset
 
 ## Data Format Requirements
 
-### CSV Format
+### CSV
 ```
 timestamp,channel1,channel2,channel3
 0.0,0.5,0.3,0.1
 0.001,0.6,0.4,0.2
-0.002,0.7,0.5,0.3
-...
 ```
+- First column should be timestamps (numeric)
+- Non-numeric columns are loaded as string data (usable in Spatial datetime config, not plotted)
 
-### NumPy Format
-- 2D array with shape `(n_samples, n_channels+1)`
-- First column: timestamps
-- Remaining columns: sensor channels
+### NumPy (`.npy`)
+- 2D array: shape `(n_samples, n_channels+1)`, first column = timestamps
 
-### HDF5 Format
-- Dataset named `data` (or specify custom name)
-- 2D array with shape `(n_samples, n_channels+1)`
-- Optional attributes: `sample_rate`, `channel_names`
+### HDF5 (`.h5`)
+- Dataset `data`: 2D array `(n_samples, n_channels+1)`
+- Optional attribute: `sample_rate`
 
-## Tips and Tricks
+## Keyboard Shortcuts
 
-1. **Performance**: PyQtGraph automatically downsamples large datasets for smooth rendering
-2. **Multiple channels**: All channels are plotted with different colors
-3. **Keyboard shortcuts**:
-   - `Ctrl+O`: Open file
-   - `Ctrl+S`: Save annotations
-   - `Ctrl+E`: Export annotations
-   - `Ctrl+Q`: Quit
-4. **STFT resolution**: Increase window size for better frequency resolution, increase overlap for better time resolution
+| Key | Action |
+|-----|--------|
+| `Ctrl+O` | Open file |
+| `Ctrl+S` | Save session |
+| `Ctrl+E` | Export annotations |
+| `Ctrl+Shift+O` | Load config |
+| `Ctrl+Shift+S` | Save config |
+| `Ctrl+Q` | Quit |
+
+## Tips
+
+- **Performance on large datasets**: The Time Series tab auto-downsamples to match screen pixel width and clips off-screen points — rendering stays fast even with millions of samples
+- **Spatial performance**: Set a low **Max displayed rows** (e.g. 5,000–10,000) in Spatial Settings for fast interaction; the points are randomly sampled
+- **STFT resolution**: larger window size → better frequency resolution; higher overlap → better time resolution
+- **Window size**: no upper limit — enter any integer value
+- **Multiple datasets**: load as many files as you need; each gets its own entry in Data Mgmt and its own Plot Box in Time Series
 
 ## Troubleshooting
 
-**Problem**: Application doesn't start
-- **Solution**: Make sure all dependencies are installed: `pip install -r requirements.txt`
+**App doesn't start** — run `pip install -r requirements.txt`
 
-**Problem**: File won't load
-- **Solution**: Check the data format requirements above
-- **Solution**: Look at the error message for specific details
+**File won't load** — check the format requirements above; look at the error in the status bar
 
-**Problem**: Plots are slow or laggy
-- **Solution**: PyQtGraph should handle millions of points efficiently with OpenGL acceleration
-- **Solution**: If still slow, try reducing the data size or check GPU drivers
+**Plots are empty after loading** — go to Data Mgmt, make sure channels are configured and **Apply** was clicked
 
-**Problem**: STFT computation is slow
-- **Solution**: Use smaller window sizes (256 or 512)
-- **Solution**: The computation happens when you switch to the Spectrogram tab or change parameters
+**Spatial tab: time masking not working** — verify the timestamp file has the same number of rows as the spatial data; check **⚙ Settings → Configure datetime columns** if using non-numeric timestamps
 
-## Next Steps
-
-- Create your own sensor data files in the supported formats
-- Define custom annotation labels for your use case
-- Export annotations for further analysis or machine learning
-- Consider building a standalone executable with PyInstaller (see README.md)
-
-## Need Help?
-
-Check the main README.md for more detailed information about features and implementation details.

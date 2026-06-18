@@ -11,6 +11,7 @@ from typing import Optional, List
 import numpy as np
 from src.models.sensor_data import SensorData
 from src.utils.signal_processing import compute_fft, find_peaks
+from src.widgets.parameter_panel import ResizeHandle
 
 
 class FFTWidget(QWidget):
@@ -97,8 +98,7 @@ class FFTWidget(QWidget):
             else:
                 plot_widget.getAxis('bottom').setStyle(showValues=False)
             
-            plot_widget.setMinimumHeight(200)
-            plot_widget.setMaximumHeight(250)
+            plot_widget.setMinimumHeight(150)
             plot_widget.setAntialiasing(True)
             
             channel_layout.addWidget(plot_widget)
@@ -114,8 +114,9 @@ class FFTWidget(QWidget):
             self.plot_widgets.append(plot_widget)
             self.info_labels.append(info_label)
             
-            # Add to main layout
+            # Add container + resize handle to main layout
             self.plots_layout.addWidget(channel_container)
+            self.plots_layout.addWidget(ResizeHandle(channel_container))
         
         # Link x-axes of all plots
         if len(self.plot_widgets) > 1:

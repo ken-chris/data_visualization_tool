@@ -146,6 +146,8 @@ class PlotBox(QWidget):
             sensor_data.get_channel(channel_idx),
             pen=self._make_pen(trace['color'], trace['opacity']),
         )
+        plot_item.setClipToView(True)
+        plot_item.setDownsampling(auto=True, method='peak')
         self._plot_items[self._get_trace_key(trace['dataset_id'], channel_idx)] = plot_item
 
     def add_trace(self, dataset_id: str, channel_idx: int, color: tuple[int, int, int], opacity: float):

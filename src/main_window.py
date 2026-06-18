@@ -7,9 +7,10 @@ from typing import Dict, Optional
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QTabWidget, QFileDialog, QMessageBox, QStackedWidget, QDialog, QScrollArea
+    QTabWidget, QFileDialog, QMessageBox, QStackedWidget, QDialog, QScrollArea,
+    QProgressDialog,
 )
-from PyQt6.QtCore import Qt, QEvent
+from PyQt6.QtCore import Qt, QEvent, QThread, pyqtSignal as _pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence
 
 import src.manipulations
@@ -26,6 +27,8 @@ from src.widgets.annotation_panel import AnnotationPanel
 from src.widgets.load_dialog import LoadDialog
 from src.widgets.data_mgmt_panel import DataMgmtPanel
 from src.widgets.manipulation_panel import ManipulationPanel
+from src.widgets.add_tab_dialog import AddTabDialog, get_registry
+import src.widgets.spatial_widget  # trigger registration
 from src.widgets.manage_config_dialog import (
     ManageConfigDialog,
     load_enabled_manipulations,
@@ -138,7 +141,13 @@ class MainWindow(QMainWindow):
         self.data_mgmt_panel.box_duplicated.connect(self.on_box_duplicated)
         self.tab_widget.addTab(self.data_mgmt_panel, 'Data Mgmt')
 
+        # "+" tab — always last; clicking it opens the add-tab dialog
+        self.tab_widget.addTab(QWidget(), "+")
+        self._plus_tab_index = self.tab_widget.count() - 1
+        self._dynamic_tabs: list[dict] = []
+
         self.tab_widget.currentChanged.connect(self._on_tab_changed)
+        self.tab_widget.setCurrentIndex(3)  # Open on Data Mgmt tab by default
 
         splitter.addWidget(left_panel)
         splitter.addWidget(self.tab_widget)
@@ -148,14 +157,82 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(splitter)
 
     def _on_tab_changed(self, index: int):
-        """Switch left sidebar page and refresh Data Mgmt panel when activated."""
-        self.left_stack.setCurrentIndex(index)
-        if index == 3:  # Data Mgmt tab
-            self.data_mgmt_panel.refresh(
-                self.timeseries_widget.plot_boxes,
-                self.timeseries_widget.datasets,
+        """Switch left sidebar page; intercept '+' tab to open add-widget dialog."""
+        if index == self._plus_tab_index:
+            prev = max(0, index - 1)
+            self.tab_widget.blockSignals(True)
+            self.tab_widget.setCurrentIndex(prev)
+            self.tab_widget.blockSignals(False)
+            self._open_add_tab_dialog()
+            return
+
+        is_dynamic = False
+        for entry in self._dynamic_tabs:
+            if entry['index'] == index:
+                is_dynamic = True
+                sidebar = entry.get('sidebar_widget')
+                if sidebar is not None:
+                    if self.left_stack.indexOf(sidebar) < 0:
+                        self.left_stack.addWidget(sidebar)
+                    self.left_stack.setCurrentWidget(sidebar)
+                else:
+                    self.left_stack.setCurrentIndex(3)
+                widget = entry['widget']
+                if hasattr(widget, 'set_datasets'):
+                    widget.set_datasets(self.datasets)
+                break
+
+        if not is_dynamic:
+            if index == 3:
+                self.left_stack.setCurrentIndex(3)
+                self.data_mgmt_panel.refresh(
+                    self.timeseries_widget.plot_boxes,
+                    self.timeseries_widget.datasets,
+                )
+                self._refresh_manipulation_channels()
+            elif index < 4:
+                self.left_stack.setCurrentIndex(index)
+
+    def _open_add_tab_dialog(self):
+        dlg = AddTabDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted or dlg.selected_name is None:
+            return
+        registry = get_registry()
+        entry = registry.get(dlg.selected_name)
+        if entry is None:
+            return
+        result = entry['factory']()
+        if isinstance(result, tuple) and len(result) == 3:
+            widget, sidebar, label = result
+        else:
+            widget, sidebar, label = result, None, dlg.selected_name
+
+        insert_idx = self._plus_tab_index
+        self.tab_widget.insertTab(insert_idx, widget, label)
+        self._plus_tab_index += 1
+
+        self._dynamic_tabs.append({
+            'index': insert_idx,
+            'widget': widget,
+            'sidebar_widget': sidebar,
+            'label': label,
+        })
+
+        if sidebar is not None:
+            self.left_stack.addWidget(sidebar)
+
+        # Wire up manipulation panel if the widget exposes one
+        if hasattr(widget, 'manip_panel'):
+            widget.manip_panel.manipulation_applied.connect(
+                lambda inst, ch_idx, ds_id, opts, w=widget:
+                    self.on_spatial_manipulation_applied(inst, ch_idx, ds_id, opts, w)
             )
-            self._refresh_manipulation_channels()
+            widget.refresh_manip_channels(self.datasets)
+
+        self.tab_widget.setCurrentIndex(insert_idx)
+
+        if hasattr(widget, 'set_datasets'):
+            widget.set_datasets(self.datasets)
 
     def on_channels_applied(self, configs: list):
         """
@@ -420,6 +497,11 @@ class MainWindow(QMainWindow):
             self._enabled_manipulations = dialog.get_enabled()
             save_enabled_manipulations(self._enabled_manipulations)
             self.manipulation_panel.set_enabled(self._enabled_manipulations)
+            # Sync enabled manipulations to any spatial tab panels
+            for entry in self._dynamic_tabs:
+                widget = entry['widget']
+                if hasattr(widget, 'manip_panel'):
+                    widget.manip_panel.set_enabled(self._enabled_manipulations)
             self._refresh_manipulation_channels()
 
     def _refresh_manipulation_channels(self):
@@ -429,6 +511,11 @@ class MainWindow(QMainWindow):
             for ch_idx, ch_name in enumerate(sensor_data.channel_names):
                 channel_info.append((dataset_id, ch_idx, ch_name))
         self.manipulation_panel.refresh_channels(channel_info)
+        # Also refresh any spatial tab manipulation panels
+        for entry in self._dynamic_tabs:
+            widget = entry['widget']
+            if hasattr(widget, 'refresh_manip_channels'):
+                widget.refresh_manip_channels(self.datasets)
 
     def on_manipulation_applied(
         self,
@@ -462,6 +549,48 @@ class MainWindow(QMainWindow):
                 data, sensor_data.timestamps, channel_idx, region, option_values
             )
             sensor_data.data[:, channel_idx] = new_data
+            self.timeseries_widget.refresh_all_traces()
+            self.statusBar().showMessage(
+                f"Applied {manip_instance.name} to "
+                f"{sensor_data.channel_names[channel_idx]}",
+                3000,
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Manipulation Error",
+                f"Error applying {manip_instance.name}:\n{str(e)}\n\n{traceback.format_exc()}",
+            )
+
+    def on_spatial_manipulation_applied(
+        self,
+        manip_instance,
+        channel_idx: int,
+        dataset_id: str,
+        option_values: dict,
+        spatial_widget,
+    ):
+        """Apply a manipulation to a channel across the full dataset, then refresh the spatial widget."""
+        sensor_data = self.datasets.get(dataset_id)
+        if sensor_data is None:
+            QMessageBox.warning(self, "No Data", "Dataset not found.")
+            return
+        if channel_idx >= sensor_data.n_channels:
+            QMessageBox.warning(self, "Invalid Channel", f"Channel {channel_idx} does not exist.")
+            return
+
+        try:
+            data = sensor_data.data[:, channel_idx].copy()
+            # Apply over the full time range (no region selection on spatial tab)
+            full_region = (float(sensor_data.timestamps[0]), float(sensor_data.timestamps[-1])) \
+                if sensor_data.timestamps is not None and len(sensor_data.timestamps) > 0 \
+                else (0.0, float(len(data)))
+            new_data = manip_instance.apply(
+                data, sensor_data.timestamps, channel_idx, full_region, option_values
+            )
+            sensor_data.data[:, channel_idx] = new_data
+            # Refresh spatial widget and timeseries to reflect modified data
+            spatial_widget.set_datasets(self.datasets)
             self.timeseries_widget.refresh_all_traces()
             self.statusBar().showMessage(
                 f"Applied {manip_instance.name} to "
@@ -537,9 +666,53 @@ class MainWindow(QMainWindow):
         return f'{base_id} ({counter})'
 
     def load_data_file(self, filename: str):
+        # ── worker thread so UI stays responsive ──────────────────────────
+        result_holder: dict = {}
+
+        class _Loader(QThread):
+            finished = _pyqtSignal()
+            error = _pyqtSignal(str)
+
+            def run(self_inner):
+                try:
+                    result_holder['data'] = load_data(filename)
+                    self_inner.finished.emit()
+                except Exception as exc:
+                    result_holder['error'] = str(exc)
+                    result_holder['tb'] = traceback.format_exc()
+                    self_inner.error.emit(str(exc))
+
+        progress = QProgressDialog(
+            f'Loading {os.path.basename(filename)}…', None, 0, 0, self
+        )
+        progress.setWindowTitle('Loading')
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        loader = _Loader(self)
+
+        def _on_done():
+            progress.close()
+            self._finish_load(filename, result_holder.get('data'))
+
+        def _on_error(msg):
+            progress.close()
+            QMessageBox.critical(
+                self, 'Error Loading File',
+                f'Could not load file:\n{filename}\n\nError: {msg}\n\n{result_holder.get("tb","")}'
+            )
+            self.statusBar().showMessage('Error loading file')
+
+        loader.finished.connect(_on_done)
+        loader.error.connect(_on_error)
+        loader.start()
+        progress.exec()  # blocks until progress.close() is called
+
+    def _finish_load(self, filename: str, sensor_data):
+        if sensor_data is None:
+            return
         try:
-            self.statusBar().showMessage(f'Loading {filename}...')
-            sensor_data = load_data(filename)
             if self.config.channel_names:
                 sensor_data.apply_channel_names_from_config(self.config.channel_names)
 
@@ -570,7 +743,6 @@ class MainWindow(QMainWindow):
             if self.annotations:
                 self.spectrogram_widget.set_annotations(self.annotations)
 
-            # Refresh Data Mgmt panel with updated boxes
             self.data_mgmt_panel.refresh(
                 self.timeseries_widget.plot_boxes,
                 self.timeseries_widget.datasets,
@@ -582,8 +754,7 @@ class MainWindow(QMainWindow):
                 self.on_region_changed(*selected_region)
         except Exception as e:
             QMessageBox.critical(
-                self,
-                'Error Loading File',
+                self, 'Error Loading File',
                 f'Could not load file:\n{filename}\n\nError: {str(e)}\n\n{traceback.format_exc()}'
             )
             self.statusBar().showMessage('Error loading file')

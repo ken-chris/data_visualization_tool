@@ -13,6 +13,7 @@ import threading
 from src.models.sensor_data import SensorData
 from src.models.annotation import Annotation
 from src.utils.signal_processing import compute_stft
+from src.widgets.parameter_panel import ResizeHandle
 
 
 def normalize_region(start: float, end: float) -> Tuple[float, float]:
@@ -225,7 +226,6 @@ class SpectrogramWidget(QWidget):
                 plot_widget.getAxis('bottom').setStyle(showValues=False)
             
             plot_widget.setMinimumHeight(200)
-            plot_widget.setMaximumHeight(400)
             
             # Create image item for this channel
             image_item = pg.ImageItem()
@@ -244,8 +244,9 @@ class SpectrogramWidget(QWidget):
             self.image_items.append(image_item)
             self.color_bars.append(color_bar)
             
-            # Add to layout
+            # Add plot and a resize handle to layout
             self.plots_layout.addWidget(plot_widget)
+            self.plots_layout.addWidget(ResizeHandle(plot_widget))
         
         # Link x-axes of all plots
         if len(self.plot_widgets) > 1:

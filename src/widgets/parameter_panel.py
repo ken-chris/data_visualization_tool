@@ -7,6 +7,41 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QSizePolicy, QToolButton
 )
 from PyQt6.QtCore import pyqtSignal, Qt
+from typing import Optional
+
+
+class ResizeHandle(QWidget):
+    """Thin draggable bar that resizes a target widget vertically when dragged."""
+
+    def __init__(self, target: QWidget, parent=None):
+        super().__init__(parent)
+        self._target = target
+        self._drag_start_y: Optional[float] = None
+        self._drag_start_height: Optional[int] = None
+        self.setFixedHeight(7)
+        self.setCursor(Qt.CursorShape.SizeVerCursor)
+        self.setStyleSheet(
+            "background: #cccccc; border-radius: 3px; margin: 1px 0;"
+        )
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_y = event.globalPosition().y()
+            self._drag_start_height = self._target.height()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_start_y is not None:
+            delta = int(event.globalPosition().y() - self._drag_start_y)
+            new_h = max(60, self._drag_start_height + delta)
+            self._target.setFixedHeight(new_h)
+            event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_y = None
+            self._drag_start_height = None
+            event.accept()
 
 
 class CollapsibleSection(QWidget):
@@ -82,7 +117,7 @@ class STFTParameterPanel(QWidget):
 
         self.window_size_spin = QSpinBox()
         self.window_size_spin.setMinimum(64)
-        self.window_size_spin.setMaximum(8192)
+        self.window_size_spin.setMaximum(2_147_483_647)
         self.window_size_spin.setValue(256)
         self.window_size_spin.setSingleStep(64)
         self.window_size_spin.setToolTip("FFT window size in samples")
@@ -232,7 +267,7 @@ class FFTParameterPanel(QWidget):
 
         self.fft_nperseg_spin = QSpinBox()
         self.fft_nperseg_spin.setMinimum(64)
-        self.fft_nperseg_spin.setMaximum(8192)
+        self.fft_nperseg_spin.setMaximum(2_147_483_647)
         self.fft_nperseg_spin.setValue(256)
         self.fft_nperseg_spin.setSingleStep(64)
         self.fft_nperseg_spin.setToolTip("FFT segment size (number of samples per FFT window)")

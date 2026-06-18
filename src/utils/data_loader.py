@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Optional, List
+from typing import Dict, Optional, List
 from src.models.sensor_data import SensorData
 from src.models.annotation import Annotation
 
@@ -13,42 +13,67 @@ from src.models.annotation import Annotation
 def load_csv(filepath: str) -> SensorData:
     """
     Load sensor data from CSV file.
-    
+
     Expected format:
         - First column: timestamps
-        - Remaining columns: sensor channels
+        - Remaining columns: sensor channels (numeric) or string data
         - Header row with column names (optional)
-    
+
+    Non-numeric columns are stored in SensorData.string_columns and are NOT
+    rendered by any visualization tab. They are available for future use in
+    manipulations or custom widgets.
+
     Args:
         filepath: Path to CSV file
-        
+
     Returns:
         SensorData object
     """
     df = pd.read_csv(filepath)
-    
-    # First column is timestamp
-    timestamps = df.iloc[:, 0].values
-    
-    # Remaining columns are data channels
-    data = df.iloc[:, 1:].values
-    
+
+    # First column is timestamp — try to coerce to float
+    ts_col = df.iloc[:, 0]
+    try:
+        timestamps = pd.to_numeric(ts_col, errors='raise').values.astype(float)
+    except (ValueError, TypeError):
+        # Fallback: integer row index as time axis
+        timestamps = np.arange(len(df), dtype=float)
+
+    # Separate numeric vs non-numeric data columns
+    data_df = df.iloc[:, 1:]
+    numeric_cols: List[str] = []
+    numeric_arrays: List[np.ndarray] = []
+    string_columns: Dict[str, np.ndarray] = {}
+
+    for col in data_df.columns:
+        coerced = pd.to_numeric(data_df[col], errors='coerce')
+        if coerced.isna().all():
+            # Entirely non-numeric — store as strings
+            string_columns[col] = data_df[col].astype(str).values
+        else:
+            numeric_cols.append(col)
+            numeric_arrays.append(coerced.values.astype(float))
+
+    if numeric_arrays:
+        data = np.column_stack(numeric_arrays)
+    else:
+        # No numeric channels — create empty data with correct row count
+        data = np.empty((len(timestamps), 0), dtype=float)
+
     # Infer sample rate from timestamps
     if len(timestamps) > 1:
         dt = np.diff(timestamps).mean()
-        sample_rate = 1.0 / dt
+        sample_rate = 1.0 / dt if dt != 0 else 1.0
     else:
         sample_rate = 1.0
-    
-    # Get channel names from header (skip first column)
-    channel_names = list(df.columns[1:])
-    
+
     return SensorData(
         timestamps=timestamps,
         data=data,
         sample_rate=sample_rate,
-        channel_names=channel_names,
-        filename=Path(filepath).name
+        channel_names=numeric_cols,
+        filename=Path(filepath).name,
+        string_columns=string_columns,
     )
 
 

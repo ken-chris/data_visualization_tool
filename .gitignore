@@ -2,3 +2,5 @@
 participant_data/*.json
 participant_data/
 venv/
+scratch.ipynb
+sample_data/

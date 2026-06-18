@@ -2,40 +2,45 @@
 Sensor data model for storing time series data and metadata.
 """
 import numpy as np
-from typing import Optional, List
+from typing import Dict, Optional, List
 
 
 class SensorData:
     """
     Container for sensor time series data.
-    
+
     Attributes:
         timestamps: Array of timestamps (seconds)
-        data: 2D array of shape (n_samples, n_channels)
+        data: 2D float array of shape (n_samples, n_channels) — numeric channels only
         sample_rate: Sampling rate in Hz
-        channel_names: List of channel names
+        channel_names: List of channel names corresponding to `data` columns
         filename: Original filename
+        string_columns: Dict of non-numeric column name → 1D array of strings.
+                        These are preserved for future use (manipulations, spatial widget,
+                        etc.) but are NOT rendered by any visualization tab.
     """
-    
+
     def __init__(
         self,
         timestamps: np.ndarray,
         data: np.ndarray,
         sample_rate: float,
         channel_names: Optional[List[str]] = None,
-        filename: Optional[str] = None
+        filename: Optional[str] = None,
+        string_columns: Optional[Dict[str, np.ndarray]] = None,
     ):
         self.timestamps = timestamps
         self.data = data
         self.sample_rate = sample_rate
         self.filename = filename
-        
+        self.string_columns: Dict[str, np.ndarray] = string_columns or {}
+
         # Auto-generate channel names if not provided
         if channel_names is None:
             n_channels = data.shape[1]
             self.channel_names = [f"Channel {i+1}" for i in range(n_channels)]
         else:
-            self.channel_names = channel_names
+            self.channel_names = list(channel_names)
     
     @property
     def n_samples(self) -> int:

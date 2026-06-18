@@ -1,0 +1,78 @@
+{
+  "channel_names": [
+    "Channel1",
+    "Channel2",
+    "Channel3"
+  ],
+  "labels": [
+    {
+      "name": "Label2",
+      "color": [
+        0,
+        255,
+        0
+      ]
+    },
+    {
+      "name": "test1",
+      "color": [
+        255,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "test2",
+      "color": [
+        0,
+        0,
+        255
+      ]
+    }
+  ],
+  "stft": {
+    "window_size": 512,
+    "overlap": 0.8,
+    "window_type": "hann",
+    "use_db": true,
+    "db_ref": 1e-09,
+    "vmin": -80.0,
+    "vmax": 0.0
+  },
+  "fft": {
+    "nperseg": 512,
+    "window": "hann"
+  },
+  "ui": {
+    "plot_height_min": 200,
+    "plot_height_max": 250
+  },
+  "data": {
+    "default_sample_rate": 100.0
+  },
+  "loaded_files": [
+    {
+      "path": "sample_sensor_data.csv",
+      "dataset_id": "sample_sensor_data.csv",
+      "channel_names": [
+        "Channel1",
+        "Channel2",
+        "Channel3"
+      ]
+    }
+  ],
+  "manipulations": [
+    {
+      "name": "Normalize",
+      "options": {}
+    },
+    {
+      "name": "Chernav Filter",
+      "options": {}
+    }
+  ],
+  "enabled_manipulations": [
+    "Normalize",
+    "Chernav Filter"
+  ]
+}

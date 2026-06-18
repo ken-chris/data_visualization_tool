@@ -1,33 +1,74 @@
-# Annotation Functionality Guide
+# Annotation Guide
 
 ## Overview
 
-The sensor data annotation tool now includes full annotation functionality, allowing you to label and categorize regions of time series data.
+The Time Series tab supports drag-to-create labeled time region annotations, with full edit and export support.
 
-## Features
+## Creating Annotations
 
-### 1. **Create Annotations**
-- Drag the **blue region selector** on the time series plot to select a time range
-- Choose an annotation label from the **Annotation Labels** panel (left side)
-- Click **"Create Annotation from Region"** button
-- The annotation appears as a colored overlay on all channel plots
+1. Open the **Annotation Labels** section in the left sidebar (Time Series tab)
+2. Click **Add Label**, enter a name, and pick a color
+3. Click a label in the list to make it **active** (highlighted)
+4. On any plot, drag the blue **region selector** to cover the time span you want
+5. Click **Create Annotation from Region** — the region appears as a colored overlay on all plots
 
-### 2. **Manage Annotation Labels**
-- **Add Label**: Create new annotation categories with custom names
-- **Edit Label**: Rename existing labels
-- **Remove Label**: Delete unused labels
-- **Change Color**: Pick a custom color for each label
-- **Select Label**: Click a label to make it active for new annotations
+## Managing Labels
 
-### 3. **Edit Annotations**
-- **Resize**: Drag the edges of annotation regions to adjust time bounds
-- **Add Notes**: Right-click an annotation and select "Edit" to add notes
-- **Delete**: Right-click and select "Delete Annotation"
-- **Sync**: All channels show the same annotations synchronized
+| Action | How |
+|--------|-----|
+| Add label | Click **Add Label**, enter name |
+| Rename label | Double-click the label in the list |
+| Change color | Select label, click **Change Color** |
+| Remove label | Select label, click **Remove Label** |
+| Set active label | Click the label row |
 
-### 4. **Overlap Detection**
-- The tool warns you when creating overlapping annotations
-- You can choose to create them anyway or cancel
+## Editing Annotations
+
+- **Resize**: drag the left or right edge of any annotation overlay
+- **Edit notes**: right-click the annotation → **Edit**
+- **Delete**: right-click → **Delete Annotation**
+- All channels display the same annotations, synchronized
+
+## Overlap Detection
+
+If you try to create an annotation that overlaps an existing one, the app warns you. You can proceed or cancel.
+
+## Exporting Annotations
+
+**File → Export Annotations** (`Ctrl+E`)
+
+Choose JSON or CSV format. Each exported annotation includes:
+- Label name and color
+- Start and end time (seconds)
+- Duration
+- Notes (if any)
+
+### JSON format
+```json
+[
+  {
+    "label": "Walking",
+    "color": [255, 0, 0],
+    "start": 1.25,
+    "end": 3.80,
+    "duration": 2.55,
+    "notes": ""
+  }
+]
+```
+
+### CSV format
+```
+label,color,start,end,duration,notes
+Walking,"[255, 0, 0]",1.25,3.8,2.55,
+```
+
+## Saving and Loading Sessions
+
+**File → Save Session** (`Ctrl+S`) saves both the data references and all annotations to a JSON session file.
+
+**File → Load Session** restores a previously saved session.
+
 
 ### 5. **Export Annotations**
 Use **File → Export Annotations** to save your work:

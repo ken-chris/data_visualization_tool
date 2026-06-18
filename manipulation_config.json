@@ -1,6 +1,6 @@
 {
   "enabled": [
     "Normalize",
-    "Butterworth Filter"
+    "Chernav Filter"
   ]
 }
