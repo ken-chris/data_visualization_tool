@@ -1,14 +1,18 @@
 """
 Main application window.
 """
+import os
+import traceback
+from typing import Dict, Optional
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
-    QTabWidget, QFileDialog, QMessageBox, QStatusBar, QMenuBar,
-    QGroupBox, QLabel
+    QTabWidget, QFileDialog, QMessageBox, QStackedWidget, QDialog, QScrollArea
 )
-from PyQt6.QtCore import Qt, QTimer, QEvent
+from PyQt6.QtCore import Qt, QEvent
 from PyQt6.QtGui import QAction, QKeySequence
-from typing import Optional
+
+import src.manipulations
 from src.models.sensor_data import SensorData
 from src.models.annotation import Annotation
 from src.utils.data_loader import load_data, load_annotations_json
@@ -17,635 +21,786 @@ from src.utils.config import AppConfig
 from src.widgets.timeseries_widget import TimeSeriesWidget
 from src.widgets.fft_widget import FFTWidget
 from src.widgets.spectrogram_widget import SpectrogramWidget
-from src.widgets.parameter_panel import ParameterPanel
+from src.widgets.parameter_panel import STFTParameterPanel, FFTParameterPanel
 from src.widgets.annotation_panel import AnnotationPanel
+from src.widgets.load_dialog import LoadDialog
+from src.widgets.data_mgmt_panel import DataMgmtPanel
+from src.widgets.manipulation_panel import ManipulationPanel
+from src.widgets.manage_config_dialog import (
+    ManageConfigDialog,
+    load_enabled_manipulations,
+    save_enabled_manipulations,
+)
 
 
 class MainWindow(QMainWindow):
     """Main application window for sensor data annotation."""
-    
+
     def __init__(self):
         super().__init__()
         self.sensor_data: Optional[SensorData] = None
+        self.datasets: Dict[str, SensorData] = {}
         self.annotations: list[Annotation] = []
-        self.current_annotation_label = "Label1"
+        self.current_annotation_label = 'Label1'
         self.config: AppConfig = AppConfig.get_default()
-        
-        # Flag to prevent view sync recursion
+
         self.is_syncing_views = False
-        
-        # Shared playback state (only one tab can play at a time)
-        # This prevents race conditions when stopping playback from a different tab
+
         import threading
         self.playback_lock = threading.Lock()
         self.playback_thread_finished = threading.Event()
-        self.playback_thread_finished.set()  # Initially set (no playback)
+        self.playback_thread_finished.set()
         self.is_playing = False
         self.stop_in_progress = False
-        self.active_playback_widget = None  # Track which widget is currently playing
-        
+        self.active_playback_widget = None
+
         self.init_ui()
-        
-        # Install event filter for global spacebar handling
         self.installEventFilter(self)
-        
+
     def init_ui(self):
-        """Initialize the user interface."""
-        self.setWindowTitle("Sensor Data Annotation Tool")
+        self.setWindowTitle('Sensor Data Annotation Tool')
         self.setGeometry(100, 100, 1400, 800)
-        
-        # Create menu bar
+
         self.create_menus()
-        
-        # Create status bar (use inherited method, don't shadow it)
-        self.statusBar().showMessage("Ready")
-        
-        # Create central widget with splitter
+        self.statusBar().showMessage('Ready')
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
+
         main_layout = QHBoxLayout(central_widget)
-        
-        # Main splitter (left panel | right panel)
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # Left panel (control panels)
+
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        
-        # File info display
-        file_info_group = QGroupBox("Loaded Data")
-        file_info_layout = QVBoxLayout(file_info_group)
-        self.file_info_label = QLabel("No data loaded")
-        self.file_info_label.setStyleSheet("color: #666; font-style: italic;")
-        self.file_info_label.setWordWrap(True)
-        file_info_layout.addWidget(self.file_info_label)
-        file_info_group.setMaximumHeight(80)
-        left_layout.addWidget(file_info_group)
-        
-        # Create annotation panel
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
         self.annotation_panel = AnnotationPanel()
         self.annotation_panel.label_selected.connect(self.on_label_selected)
-        left_layout.addWidget(self.annotation_panel)
-        
-        # Create parameter panel
-        self.parameter_panel = ParameterPanel()
-        self.parameter_panel.stft_parameters_changed.connect(self.on_stft_parameters_changed)
-        self.parameter_panel.fft_parameters_changed.connect(self.on_fft_parameters_changed)
-        left_layout.addWidget(self.parameter_panel)
-        
-        left_layout.addStretch()
-        
-        # Right panel (tab widget for plots)
+
+        self.stft_panel = STFTParameterPanel()
+        self.stft_panel.stft_parameters_changed.connect(self.on_stft_parameters_changed)
+
+        self.fft_panel = FFTParameterPanel()
+        self.fft_panel.fft_parameters_changed.connect(self.on_fft_parameters_changed)
+
+        self.manipulation_panel = ManipulationPanel()
+        self.manipulation_panel.manipulation_applied.connect(self.on_manipulation_applied)
+        self._enabled_manipulations = load_enabled_manipulations()
+        self.manipulation_panel.set_enabled(self._enabled_manipulations)
+
+        ts_sidebar_content = QWidget()
+        ts_sidebar_content_layout = QVBoxLayout(ts_sidebar_content)
+        ts_sidebar_content_layout.setContentsMargins(0, 0, 0, 0)
+        ts_sidebar_content_layout.setSpacing(0)
+        ts_sidebar_content_layout.addWidget(self.annotation_panel)
+        ts_sidebar_content_layout.addWidget(self.manipulation_panel, stretch=1)
+
+        ts_sidebar_scroll = QScrollArea()
+        ts_sidebar_scroll.setWidgetResizable(True)
+        ts_sidebar_scroll.setWidget(ts_sidebar_content)
+
+        self.left_stack = QStackedWidget()
+        self.left_stack.addWidget(ts_sidebar_scroll)  # index 0 → Time Series
+        self.left_stack.addWidget(self.stft_panel)         # index 1 → Spectrogram
+        self.left_stack.addWidget(self.fft_panel)          # index 2 → FFT
+        self.left_stack.addWidget(QWidget())               # index 3 → Data Mgmt (no sidebar)
+        left_layout.addWidget(self.left_stack)
+
         self.tab_widget = QTabWidget()
-        
-        # Create plot widgets
+
         self.timeseries_widget = TimeSeriesWidget()
+        self.timeseries_widget.datasets = self.datasets
         self.timeseries_widget.region_changed.connect(self.on_region_changed)
         self.timeseries_widget.annotations_changed.connect(self.on_annotations_changed)
         self.timeseries_widget.annotation_selected.connect(self.on_annotation_selected)
         self.timeseries_widget.view_range_changed.connect(self.on_view_range_changed)
-        
-        # Set initial active label
+
         label, color = self.annotation_panel.get_active_label()
         if label:
             self.timeseries_widget.set_active_label(label, color)
-        
+
         self.spectrogram_widget = SpectrogramWidget()
         self.spectrogram_widget.view_range_changed.connect(self.on_spectrogram_view_range_changed)
         self.spectrogram_widget.annotations_changed.connect(self.on_spectrogram_annotations_changed)
         self.spectrogram_widget.region_changed.connect(self.on_spectrogram_region_changed)
         self.fft_widget = FFTWidget()
-        
-        # Add tabs
-        self.tab_widget.addTab(self.timeseries_widget, "Time Series")
-        self.tab_widget.addTab(self.spectrogram_widget, "Spectrogram")
-        self.tab_widget.addTab(self.fft_widget, "FFT")
-        
-        # Add panels to splitter
+
+        self.tab_widget.addTab(self.timeseries_widget, 'Time Series')
+        self.tab_widget.addTab(self.spectrogram_widget, 'Spectrogram')
+        self.tab_widget.addTab(self.fft_widget, 'FFT')
+
+        self.data_mgmt_panel = DataMgmtPanel()
+        self.data_mgmt_panel.load_data_requested.connect(self.open_file)
+        self.data_mgmt_panel.channels_applied.connect(self.on_channels_applied)
+        self.data_mgmt_panel.channel_deleted.connect(self.on_channel_deleted)
+        self.data_mgmt_panel.channel_duplicated.connect(self.on_channel_duplicated)
+        self.data_mgmt_panel.box_deleted.connect(self.on_box_deleted)
+        self.data_mgmt_panel.box_duplicated.connect(self.on_box_duplicated)
+        self.tab_widget.addTab(self.data_mgmt_panel, 'Data Mgmt')
+
+        self.tab_widget.currentChanged.connect(self._on_tab_changed)
+
         splitter.addWidget(left_panel)
         splitter.addWidget(self.tab_widget)
-        
-        # Set splitter proportions (1:4 ratio)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
-        
+
         main_layout.addWidget(splitter)
-    
+
+    def _on_tab_changed(self, index: int):
+        """Switch left sidebar page and refresh Data Mgmt panel when activated."""
+        self.left_stack.setCurrentIndex(index)
+        if index == 3:  # Data Mgmt tab
+            self.data_mgmt_panel.refresh(
+                self.timeseries_widget.plot_boxes,
+                self.timeseries_widget.datasets,
+            )
+            self._refresh_manipulation_channels()
+
+    def on_channels_applied(self, configs: list):
+        """
+        Handle channel name edits and FFT/STFT filter changes from Data Mgmt panel.
+        configs: list of {dataset_id, channel_idx, name, fft, stft}
+        """
+        # Update channel names in all datasets
+        for cfg in configs:
+            sensor_data = self.datasets.get(cfg['dataset_id'])
+            if sensor_data and cfg['channel_idx'] < len(sensor_data.channel_names):
+                sensor_data.channel_names[cfg['channel_idx']] = cfg['name']
+
+        # Apply channel filters to FFT and Spectrogram for the most recent dataset
+        if self.sensor_data is not None:
+            dataset_id = os.path.basename(self.sensor_data.filename) if self.sensor_data.filename else None
+            if dataset_id:
+                fft_channels = [
+                    cfg['channel_idx'] for cfg in configs
+                    if cfg['dataset_id'] == dataset_id and cfg['fft']
+                ]
+                stft_channels = [
+                    cfg['channel_idx'] for cfg in configs
+                    if cfg['dataset_id'] == dataset_id and cfg['stft']
+                ]
+                self.fft_widget.set_active_channels(fft_channels)
+                self.spectrogram_widget.set_active_channels(stft_channels)
+                # Refresh FFT panel channel list to match new names
+                self.fft_panel.update_channel_list(self.sensor_data.channel_names)
+
+        # Refresh timeseries legends (names may have changed)
+        for box in self.timeseries_widget.plot_boxes:
+            box.refresh_traces(self.timeseries_widget.datasets)
+
+        # Refresh Data Mgmt panel so names update in box sections too
+        self.data_mgmt_panel.refresh(
+            self.timeseries_widget.plot_boxes,
+            self.timeseries_widget.datasets,
+        )
+
+    def on_channel_deleted(self, dataset_id: str, channel_idx: int):
+        """Remove a channel from its dataset and refresh all views."""
+        sensor_data = self.datasets.get(dataset_id)
+        if sensor_data is None or sensor_data.n_channels <= 1:
+            QMessageBox.warning(
+                self,
+                "Cannot Delete",
+                "Cannot delete the only channel in a dataset.",
+            )
+            return
+
+        import numpy as np
+
+        sensor_data.data = np.delete(sensor_data.data, channel_idx, axis=1)
+        sensor_data.channel_names.pop(channel_idx)
+
+        for box in self.timeseries_widget.plot_boxes:
+            to_remove = []
+            for trace in list(box.traces):
+                if trace['dataset_id'] == dataset_id:
+                    if trace['channel_idx'] == channel_idx:
+                        to_remove.append((trace['dataset_id'], trace['channel_idx']))
+                    elif trace['channel_idx'] > channel_idx:
+                        trace['channel_idx'] -= 1
+            for did, cidx in to_remove:
+                box.remove_trace(did, cidx)
+            box.refresh_traces(self.timeseries_widget.datasets)
+
+        if self.sensor_data is sensor_data:
+            self.fft_widget.set_data(sensor_data)
+            self.spectrogram_widget.set_data(sensor_data)
+            self.fft_panel.update_channel_list(sensor_data.channel_names)
+
+        self.data_mgmt_panel.refresh(
+            self.timeseries_widget.plot_boxes,
+            self.timeseries_widget.datasets,
+        )
+        self._refresh_manipulation_channels()
+        self.statusBar().showMessage(f"Deleted channel {channel_idx} from {dataset_id}", 3000)
+
+    def on_channel_duplicated(self, dataset_id: str, channel_idx: int):
+        """Create a new dataset with just this channel's data."""
+        sensor_data = self.datasets.get(dataset_id)
+        if sensor_data is None:
+            return
+
+        ch_name = sensor_data.channel_names[channel_idx]
+        new_data = sensor_data.data[:, channel_idx:channel_idx + 1].copy()
+        new_name = f"{ch_name} (copy)"
+        new_dataset_id = f"{dataset_id}:{ch_name}_copy"
+        counter = 2
+        base_id = new_dataset_id
+        while new_dataset_id in self.datasets:
+            new_dataset_id = f"{base_id}_{counter}"
+            counter += 1
+
+        new_sd = SensorData(
+            timestamps=sensor_data.timestamps.copy(),
+            data=new_data,
+            sample_rate=sensor_data.sample_rate,
+            channel_names=[new_name],
+            filename=sensor_data.filename,
+        )
+        self.datasets[new_dataset_id] = new_sd
+        self.timeseries_widget.add_dataset(new_dataset_id, new_sd, 'separate', None)
+        self.data_mgmt_panel.refresh(
+            self.timeseries_widget.plot_boxes,
+            self.timeseries_widget.datasets,
+        )
+        self._refresh_manipulation_channels()
+        self.statusBar().showMessage(
+            f"Duplicated '{ch_name}' as new dataset '{new_dataset_id}'",
+            3000,
+        )
+
+    def on_box_deleted(self, box_name: str):
+        """Remove a display box from the time series view."""
+        box = self.timeseries_widget._find_plot_box(box_name)
+        if box is None:
+            return
+        self.timeseries_widget.remove_box(box)
+        self.data_mgmt_panel.refresh(
+            self.timeseries_widget.plot_boxes,
+            self.timeseries_widget.datasets,
+        )
+        self.statusBar().showMessage(f"Removed box '{box_name}'", 2000)
+
+    def on_box_duplicated(self, box_name: str):
+        """Duplicate a display box with the same traces."""
+        import copy
+        src_box = self.timeseries_widget._find_plot_box(box_name)
+        if src_box is None:
+            return
+
+        from src.widgets.plot_box import PlotBox
+        new_box = PlotBox(self.timeseries_widget._next_box_name(),
+                          self.timeseries_widget.datasets, self.timeseries_widget)
+        for trace in src_box.traces:
+            new_box.add_trace(trace['dataset_id'], trace['channel_idx'],
+                              trace['color'], trace.get('width', 1.0))
+        self.timeseries_widget._add_plot_box(new_box)
+        self.timeseries_widget._relink_x_axes()
+        self.timeseries_widget._refresh_region_items()
+        region = self.timeseries_widget.get_selected_region()
+        if region:
+            new_box.set_region(*region)
+        new_box.get_plot_widget().autoRange()
+        self.data_mgmt_panel.refresh(
+            self.timeseries_widget.plot_boxes,
+            self.timeseries_widget.datasets,
+        )
+        self.statusBar().showMessage(f"Duplicated box '{box_name}'", 2000)
+
     def create_menus(self):
-        """Create menu bar with actions."""
         menubar = self.menuBar()
-        
-        # File menu
-        file_menu = menubar.addMenu("&File")
-        
-        open_action = QAction("&Open...", self)
+
+        file_menu = menubar.addMenu('&File')
+
+        open_action = QAction('&Open...', self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self.open_file)
         file_menu.addAction(open_action)
-        
-        # Load Annotations action
-        load_annotations_action = QAction("Load &Annotations...", self)
-        load_annotations_action.setShortcut(QKeySequence("Ctrl+L"))
+
+        load_annotations_action = QAction('Load &Annotations...', self)
+        load_annotations_action.setShortcut(QKeySequence('Ctrl+L'))
         load_annotations_action.triggered.connect(self.load_annotations)
         file_menu.addAction(load_annotations_action)
-        
+
         file_menu.addSeparator()
-        
-        # Load Config action
-        load_config_action = QAction("Load C&onfig...", self)
-        load_config_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+
+        load_config_action = QAction('Load C&onfig...', self)
+        load_config_action.setShortcut(QKeySequence('Ctrl+Shift+O'))
         load_config_action.triggered.connect(self.load_config_file)
         file_menu.addAction(load_config_action)
-        
-        # Save Config action
-        save_config_action = QAction("Save Config &As...", self)
-        save_config_action.setShortcut(QKeySequence("Ctrl+Shift+S"))
+
+        save_config_action = QAction('Save Config &As...', self)
+        save_config_action.setShortcut(QKeySequence('Ctrl+Shift+S'))
         save_config_action.triggered.connect(self.save_config_file)
         file_menu.addAction(save_config_action)
-        
+
         file_menu.addSeparator()
-        
-        save_action = QAction("&Save Annotations", self)
+
+        save_action = QAction('&Save Annotations', self)
         save_action.setShortcut(QKeySequence.StandardKey.Save)
         save_action.triggered.connect(self.save_annotations)
         file_menu.addAction(save_action)
-        
-        export_action = QAction("&Export Annotations...", self)
-        export_action.setShortcut(QKeySequence("Ctrl+E"))
+
+        export_action = QAction('&Export Annotations...', self)
+        export_action.setShortcut(QKeySequence('Ctrl+E'))
         export_action.triggered.connect(self.export_annotations)
         file_menu.addAction(export_action)
-        
+
         file_menu.addSeparator()
-        
-        quit_action = QAction("&Quit", self)
+
+        quit_action = QAction('&Quit', self)
         quit_action.setShortcut(QKeySequence.StandardKey.Quit)
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
-        
-        # Edit menu
-        edit_menu = menubar.addMenu("&Edit")
-        
-        delete_annotation_action = QAction("&Delete Selected Annotation", self)
+
+        edit_menu = menubar.addMenu('&Edit')
+
+        delete_annotation_action = QAction('&Delete Selected Annotation', self)
         delete_annotation_action.setShortcut(QKeySequence.StandardKey.Delete)
         delete_annotation_action.triggered.connect(self.delete_selected_annotation)
         edit_menu.addAction(delete_annotation_action)
-        
-        clear_annotations_action = QAction("&Clear All Annotations", self)
-        clear_annotations_action.setShortcut(QKeySequence("Ctrl+Shift+D"))
+
+        clear_annotations_action = QAction('&Clear All Annotations', self)
+        clear_annotations_action.setShortcut(QKeySequence('Ctrl+Shift+D'))
         clear_annotations_action.triggered.connect(self.clear_all_annotations)
         edit_menu.addAction(clear_annotations_action)
-        
-        # View menu
-        view_menu = menubar.addMenu("&View")
-        
-        autoscale_y_action = QAction("Autoscale &Y-Axis", self)
-        autoscale_y_action.setShortcut(QKeySequence("Ctrl+Y"))
+
+        view_menu = menubar.addMenu('&View')
+
+        autoscale_y_action = QAction('Autoscale &Y-Axis', self)
+        autoscale_y_action.setShortcut(QKeySequence('Ctrl+Y'))
         autoscale_y_action.triggered.connect(self.autoscale_y_axis)
         view_menu.addAction(autoscale_y_action)
-        
-        home_selection_action = QAction("&Home Selection", self)
-        home_selection_action.setShortcut(QKeySequence("Ctrl+H"))
+
+        home_selection_action = QAction('&Home Selection', self)
+        home_selection_action.setShortcut(QKeySequence('Ctrl+H'))
         home_selection_action.triggered.connect(self.home_selection)
         view_menu.addAction(home_selection_action)
-        
-        # Help menu
-        help_menu = menubar.addMenu("&Help")
-        
-        feature_ref_action = QAction("&Feature Reference", self)
+
+        tools_menu = menubar.addMenu('&Tools')
+
+        manage_config_action = QAction('&Manage Config...', self)
+        manage_config_action.setShortcut(QKeySequence('Ctrl+M'))
+        manage_config_action.triggered.connect(self.manage_config)
+        tools_menu.addAction(manage_config_action)
+
+        help_menu = menubar.addMenu('&Help')
+
+        feature_ref_action = QAction('&Feature Reference', self)
         feature_ref_action.triggered.connect(self.show_feature_reference)
         help_menu.addAction(feature_ref_action)
-        
+
         help_menu.addSeparator()
-        
-        about_action = QAction("&About", self)
+
+        about_action = QAction('&About', self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
-    
+
     def delete_selected_annotation(self):
-        """Delete the currently selected annotation."""
         self.timeseries_widget.delete_selected_annotation()
-    
+
     def clear_all_annotations(self):
-        """Clear all annotations from both tabs."""
         self.timeseries_widget.clear_all_annotations()
         self.spectrogram_widget.clear_all_annotations()
-    
+
     def autoscale_y_axis(self):
-        """Autoscale the Y-axis for all plots."""
-        # Autoscale timeseries Y-axis
         self.timeseries_widget.autoscale_y_axis()
-        
-        # Autoscale spectrogram Y-axis (frequency axis)
         self.spectrogram_widget.autoscale_y_axis()
-    
+
     def home_selection(self):
-        """Move selection to home position (10%-30% of visible segment)."""
-        # Get the currently active tab
-        if self.tab_widget.currentIndex() == 0:  # Time Series tab
+        if self.tab_widget.currentIndex() == 0:
             self.timeseries_widget.home_selection()
-        elif self.tab_widget.currentIndex() == 1:  # Spectrogram tab
+        elif self.tab_widget.currentIndex() == 1:
             self.spectrogram_widget.home_selection()
-    
+
+    def manage_config(self):
+        dialog = ManageConfigDialog(self._enabled_manipulations, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._enabled_manipulations = dialog.get_enabled()
+            save_enabled_manipulations(self._enabled_manipulations)
+            self.manipulation_panel.set_enabled(self._enabled_manipulations)
+            self._refresh_manipulation_channels()
+
+    def _refresh_manipulation_channels(self):
+        """Rebuild manipulation panel channel list from current datasets."""
+        channel_info = []
+        for dataset_id, sensor_data in self.datasets.items():
+            for ch_idx, ch_name in enumerate(sensor_data.channel_names):
+                channel_info.append((dataset_id, ch_idx, ch_name))
+        self.manipulation_panel.refresh_channels(channel_info)
+
+    def on_manipulation_applied(
+        self,
+        manip_instance,
+        channel_idx: int,
+        dataset_id: str,
+        option_values: dict,
+    ):
+        """Apply a data manipulation to a channel's data in the current region."""
+        sensor_data = self.datasets.get(dataset_id)
+        if sensor_data is None:
+            QMessageBox.warning(self, "No Data", "Dataset not found.")
+            return
+        if channel_idx >= sensor_data.n_channels:
+            QMessageBox.warning(
+                self,
+                "Invalid Channel",
+                f"Channel {channel_idx} does not exist.",
+            )
+            return
+
+        region = self.timeseries_widget.get_selected_region()
+        if region is None:
+            QMessageBox.warning(self, "No Region", "Please select a region first.")
+            return
+
+        try:
+            # sensor_data.data is (n_samples, n_channels) — use column indexing
+            data = sensor_data.data[:, channel_idx].copy()
+            new_data = manip_instance.apply(
+                data, sensor_data.timestamps, channel_idx, region, option_values
+            )
+            sensor_data.data[:, channel_idx] = new_data
+            self.timeseries_widget.refresh_all_traces()
+            self.statusBar().showMessage(
+                f"Applied {manip_instance.name} to "
+                f"{sensor_data.channel_names[channel_idx]}",
+                3000,
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Manipulation Error",
+                f"Error applying {manip_instance.name}:\n{str(e)}\n\n{traceback.format_exc()}",
+            )
+
     def eventFilter(self, obj, event):
-        """Global event filter to handle spacebar across entire application."""
-        if event.type() == QEvent.Type.KeyPress:
-            if event.key() == 32 and not event.isAutoRepeat():  # Key code 32 is spacebar
-                # Route to the current active widget
-                if self.tab_widget.currentIndex() == 0:  # Time Series tab
-                    if self.timeseries_widget.is_playing:
-                        self.timeseries_widget.stop_playback()
-                    else:
-                        self.timeseries_widget.play_selected_segment()
-                    return True
-                elif self.tab_widget.currentIndex() == 1:  # Spectrogram tab
-                    if self.spectrogram_widget.is_playing:
-                        self.spectrogram_widget.stop_playback()
-                    else:
-                        self.spectrogram_widget.play_selected_segment()
-                    return True
         return super().eventFilter(obj, event)
-    
+
     def open_file(self):
-        """Open a data file dialog."""
         filename, _ = QFileDialog.getOpenFileName(
             self,
-            "Open Sensor Data File",
-            "",
-            "Data Files (*.csv *.npy *.h5 *.hdf5);;CSV Files (*.csv);;NumPy Files (*.npy);;HDF5 Files (*.h5 *.hdf5);;All Files (*)"
+            'Open Sensor Data File',
+            '',
+            'Data Files (*.csv *.npy *.h5 *.hdf5);;CSV Files (*.csv);;NumPy Files (*.npy);;HDF5 Files (*.h5 *.hdf5);;All Files (*)'
         )
-        
         if filename:
             self.load_data_file(filename)
-    
+
     def load_annotations(self):
-        """Load annotations from a JSON file dialog."""
         filename, _ = QFileDialog.getOpenFileName(
             self,
-            "Load Annotations",
-            "",
-            "JSON Files (*.json);;All Files (*)"
+            'Load Annotations',
+            '',
+            'JSON Files (*.json);;All Files (*)'
         )
-        
         if filename:
             self.load_annotations_file(filename)
-    
+
     def load_annotations_file(self, filename: str):
-        """Load annotations from a JSON file and add them to the current view."""
         try:
-            self.statusBar().showMessage(f"Loading annotations from {filename}...")
-            
-            # Load annotations using the new function
+            self.statusBar().showMessage(f'Loading annotations from {filename}...')
             loaded_annotations = load_annotations_json(filename)
-            
             if not loaded_annotations:
                 QMessageBox.warning(
                     self,
-                    "No Annotations",
-                    f"No annotations found in {filename}"
+                    'No Annotations',
+                    f'No annotations found in {filename}'
                 )
                 return
-            
-            # Set sample rate if sensor data is loaded
             if self.sensor_data:
                 for annotation in loaded_annotations:
                     annotation.sample_rate = self.sensor_data.sample_rate
-            
-            # Add loaded annotations to the time series widget
             for annotation in loaded_annotations:
                 self.timeseries_widget.annotations.append(annotation)
                 self.timeseries_widget.add_annotation_to_plots(annotation)
-            
-            # Emit annotations changed signal
             self.timeseries_widget.annotations_changed.emit()
-            
-            # Update status bar
             self.statusBar().showMessage(
-                f"Loaded {len(loaded_annotations)} annotations from {filename}"
+                f'Loaded {len(loaded_annotations)} annotations from {filename}'
             )
-            
         except Exception as e:
             QMessageBox.critical(
                 self,
-                "Error Loading Annotations",
-                f"Could not load annotations from {filename}:\n\n{str(e)}"
+                'Error Loading Annotations',
+                f'Could not load annotations from {filename}:\n\n{str(e)}'
             )
-            self.statusBar().showMessage("Error loading annotations")
+            self.statusBar().showMessage('Error loading annotations')
 
-    
+    def _make_dataset_id(self, filename: str) -> str:
+        base_id = os.path.basename(filename)
+        if base_id not in self.datasets:
+            return base_id
+        counter = 2
+        while f'{base_id} ({counter})' in self.datasets:
+            counter += 1
+        return f'{base_id} ({counter})'
+
     def load_data_file(self, filename: str):
-        """Load a data file and update the UI."""
         try:
-            self.statusBar().showMessage(f"Loading {filename}...")
-            self.sensor_data = load_data(filename)
-            
-            # Apply channel names from config if available
+            self.statusBar().showMessage(f'Loading {filename}...')
+            sensor_data = load_data(filename)
             if self.config.channel_names:
-                self.sensor_data.apply_channel_names_from_config(self.config.channel_names)
-            
-            # Update file info display in left panel
-            import os
-            file_name = os.path.basename(self.sensor_data.filename)
-            file_info = (
-                f"<b>{file_name}</b><br>"
-                f"Samples: {self.sensor_data.n_samples:,}<br>"
-                f"Channels: {self.sensor_data.n_channels}<br>"
-                f"Duration: {self.sensor_data.duration:.2f}s<br>"
-                f"Sample Rate: {self.sensor_data.sample_rate:.1f} Hz"
-            )
-            self.file_info_label.setText(file_info)
-            self.file_info_label.setStyleSheet("")  # Remove italic style when data is loaded
-            
-            # Update status bar with file info
-            info_msg = (f"Loaded: {self.sensor_data.filename} | "
-                       f"{self.sensor_data.n_samples:,} samples | "
-                       f"{self.sensor_data.n_channels} channels | "
-                       f"{self.sensor_data.duration:.2f}s | "
-                       f"{self.sensor_data.sample_rate:.1f} Hz")
+                sensor_data.apply_channel_names_from_config(self.config.channel_names)
+
+            existing_box_names = self.timeseries_widget.get_plot_boxes()
+            dialog = LoadDialog(filename, existing_box_names, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                self.statusBar().showMessage('Load cancelled', 2000)
+                return
+
+            result = dialog.get_result()
+            dataset_id = self._make_dataset_id(filename)
+            target_box_name = result.get('box_name') if result['action'] == 'existing' else None
+
+            self.timeseries_widget.add_dataset(dataset_id, sensor_data, result['layout'], target_box_name)
+            self.datasets[dataset_id] = sensor_data
+            self.sensor_data = sensor_data
+
+            info_msg = (f'Loaded: {sensor_data.filename} | '
+                        f'{sensor_data.n_samples:,} samples | '
+                        f'{sensor_data.n_channels} channels | '
+                        f'{sensor_data.duration:.2f}s | '
+                        f'{sensor_data.sample_rate:.1f} Hz')
             self.statusBar().showMessage(info_msg)
-            
-            # Update plot widgets with new data
-            self.timeseries_widget.set_data(self.sensor_data)
-            self.fft_widget.set_data(self.sensor_data)
-            self.spectrogram_widget.set_data(self.sensor_data)
-            
-            # Update parameter panel with channel names
-            self.parameter_panel.update_channel_list(self.sensor_data.channel_names)
-            
+
+            self.fft_widget.set_data(sensor_data)
+            self.spectrogram_widget.set_data(sensor_data)
+            self.fft_panel.update_channel_list(sensor_data.channel_names)
+            if self.annotations:
+                self.spectrogram_widget.set_annotations(self.annotations)
+
+            # Refresh Data Mgmt panel with updated boxes
+            self.data_mgmt_panel.refresh(
+                self.timeseries_widget.plot_boxes,
+                self.timeseries_widget.datasets,
+            )
+            self._refresh_manipulation_channels()
+
+            selected_region = self.timeseries_widget.get_selected_region()
+            if selected_region is not None:
+                self.on_region_changed(*selected_region)
         except Exception as e:
             QMessageBox.critical(
                 self,
-                "Error Loading File",
-                f"Could not load file:\n{filename}\n\nError: {str(e)}"
+                'Error Loading File',
+                f'Could not load file:\n{filename}\n\nError: {str(e)}\n\n{traceback.format_exc()}'
             )
-            self.statusBar().showMessage("Error loading file")
-    
+            self.statusBar().showMessage('Error loading file')
+
     def save_annotations(self):
-        """Save annotations to file."""
-        # Get current annotations from widget
         self.annotations = self.timeseries_widget.get_annotations()
-        
         if not self.annotations:
             QMessageBox.information(
                 self,
-                "No Annotations",
-                "There are no annotations to save."
+                'No Annotations',
+                'There are no annotations to save.'
             )
             return
-        
         filename, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Annotation Session",
-            "",
-            "JSON Files (*.json)"
+            'Save Annotation Session',
+            '',
+            'JSON Files (*.json)'
         )
-        
         if filename:
             try:
                 sensor_filename = self.sensor_data.filename if self.sensor_data else None
                 save_session(self.annotations, filename, sensor_filename)
-                self.statusBar().showMessage(f"Saved {len(self.annotations)} annotations to {filename}")
+                self.statusBar().showMessage(f'Saved {len(self.annotations)} annotations to {filename}')
             except Exception as e:
                 QMessageBox.critical(
                     self,
-                    "Error Saving",
-                    f"Could not save annotations:\n{str(e)}"
+                    'Error Saving',
+                    f'Could not save annotations:\n{str(e)}'
                 )
-    
+
     def export_annotations(self):
-        """Export annotations to JSON or CSV."""
-        # Get current annotations from widget
         self.annotations = self.timeseries_widget.get_annotations()
-        
         if not self.annotations:
             QMessageBox.information(
                 self,
-                "No Annotations",
-                "There are no annotations to export."
+                'No Annotations',
+                'There are no annotations to export.'
             )
             return
-        
         filename, selected_filter = QFileDialog.getSaveFileName(
             self,
-            "Export Annotations",
-            "",
-            "JSON Files (*.json);;CSV Files (*.csv)"
+            'Export Annotations',
+            '',
+            'JSON Files (*.json);;CSV Files (*.csv)'
         )
-        
         if filename:
             try:
-                if selected_filter == "CSV Files (*.csv)" or filename.endswith('.csv'):
+                if selected_filter == 'CSV Files (*.csv)' or filename.endswith('.csv'):
                     export_to_csv(self.annotations, filename)
                 else:
                     export_to_json(self.annotations, filename)
-                
-                self.statusBar().showMessage(f"Exported {len(self.annotations)} annotations to {filename}")
+                self.statusBar().showMessage(f'Exported {len(self.annotations)} annotations to {filename}')
             except Exception as e:
                 QMessageBox.critical(
                     self,
-                    "Error Exporting",
-                    f"Could not export annotations:\n{str(e)}"
+                    'Error Exporting',
+                    f'Could not export annotations:\n{str(e)}'
                 )
-    
+
     def show_about(self):
-        """Show about dialog."""
         QMessageBox.about(
             self,
-            "About Sensor Data Annotation Tool",
-            "<h3>Sensor Data Annotation Tool</h3>"
-            "<p>Version 0.1.0</p>"
-            "<p>A high-performance tool for annotating time series sensor data "
-            "with real-time FFT and STFT visualization.</p>"
-            "<p>Built with PyQt6 and PyQtGraph</p>"
+            'About Sensor Data Annotation Tool',
+            '<h3>Sensor Data Annotation Tool</h3>'
+            '<p>Version 0.1.0</p>'
+            '<p>A high-performance tool for annotating time series sensor data '
+            'with real-time FFT and STFT visualization.</p>'
+            '<p>Built with PyQt6 and PyQtGraph</p>'
         )
-    
+
     def show_feature_reference(self):
-        """Show feature reference dialog with keyboard shortcuts."""
         QMessageBox.information(
             self,
-            "Feature Reference - Keyboard Shortcuts",
-            "<h3>Keyboard Shortcuts & Features</h3>"
-            "<p><b>Playback Control:</b></p>"
-            "<ul>"
-            "<li><b>Spacebar</b> - Toggle playback start/stop for selected segment</li>"
-            "</ul>"
-            "<p><b>View & Display:</b></p>"
-            "<ul>"
-            "<li><b>Ctrl+Y</b> - Autoscale Y-axis to fit visible data (with 5% padding)</li>"
-            "<li><b>Ctrl+H</b> - Home Selection - Move selection to 10%-30% of visible segment</li>"
-            "</ul>"
-            "<p><b>Annotation Management:</b></p>"
-            "<ul>"
-            "<li><b>Delete</b> - Delete selected annotation</li>"
-            "<li><b>Ctrl+Shift+D</b> - Clear all annotations (with confirmation)</li>"
-            "</ul>"
-            "<p><b>File Operations:</b></p>"
-            "<ul>"
-            "<li><b>Ctrl+O</b> - Open sensor data file</li>"
-            "<li><b>Ctrl+S</b> - Save annotations</li>"
-            "<li><b>Ctrl+L</b> - Load annotations from file</li>"
-            "<li><b>Ctrl+E</b> - Export annotations to CSV/JSON</li>"
-            "<li><b>Ctrl+Shift+O</b> - Load configuration file</li>"
-            "<li><b>Ctrl+Shift+S</b> - Save configuration file</li>"
-            "</ul>"
-            "<p><b>Notes:</b></p>"
-            "<ul>"
-            "<li>Annotations created in either tab (Time Series or Spectrogram) are automatically synced</li>"
-            "<li>All keyboard shortcuts work in both Time Series and Spectrogram tabs</li>"
-            "</ul>"
+            'Feature Reference - Keyboard Shortcuts',
+            '<h3>Keyboard Shortcuts & Features</h3>'
+            '<p><b>View & Display:</b></p>'
+            '<ul>'
+            '<li><b>Ctrl+Y</b> - Autoscale Y-axis to fit visible data (with 5% padding)</li>'
+            '<li><b>Ctrl+H</b> - Home Selection - Move selection to 10%-30% of visible segment</li>'
+            '</ul>'
+            '<p><b>Annotation Management:</b></p>'
+            '<ul>'
+            '<li><b>Delete</b> - Delete selected annotation</li>'
+            '<li><b>Ctrl+Shift+D</b> - Clear all annotations (with confirmation)</li>'
+            '</ul>'
+            '<p><b>File Operations:</b></p>'
+            '<ul>'
+            '<li><b>Ctrl+O</b> - Open sensor data file</li>'
+            '<li><b>Ctrl+S</b> - Save annotations</li>'
+            '<li><b>Ctrl+L</b> - Load annotations from file</li>'
+            '<li><b>Ctrl+E</b> - Export annotations to CSV/JSON</li>'
+            '<li><b>Ctrl+Shift+O</b> - Load configuration file</li>'
+            '<li><b>Ctrl+Shift+S</b> - Save configuration file</li>'
+            '</ul>'
+            '<p><b>Notes:</b></p>'
+            '<ul>'
+            '<li>Annotations created in either tab (Time Series or Spectrogram) are automatically synced</li>'
+            '<li>All keyboard shortcuts work in both Time Series and Spectrogram tabs</li>'
+            '</ul>'
         )
-    
+
     def on_region_changed(self, start_time: float, end_time: float):
-        """Handle region selection change in time series widget."""
-        # Update FFT with selected region (all channels)
         self.fft_widget.update_fft(start_time, end_time)
-        
-        # Update spectrogram with the new region overlay
         self.spectrogram_widget.set_region(start_time, end_time)
-    
+
     def on_stft_parameters_changed(self, window_size: int, overlap: float, window_type: str,
                                    use_db: bool, db_ref: float, vmin: float, vmax: float):
-        """Handle STFT parameter changes."""
         self.spectrogram_widget.set_parameters(window_size, overlap, window_type, use_db, db_ref, vmin, vmax)
-        
-        db_info = f"dB scale (range: [{vmin}, {vmax}]dB)" if use_db else "linear scale"
+        db_info = f'dB scale (range: [{vmin}, {vmax}]dB)' if use_db else 'linear scale'
         self.statusBar().showMessage(
-            f"STFT updated: window={window_size}, overlap={overlap*100:.0f}%, "
-            f"type={window_type}, {db_info}"
+            f'STFT updated: window={window_size}, overlap={overlap*100:.0f}%, '
+            f'type={window_type}, {db_info}'
         )
-    
+
     def on_fft_parameters_changed(self, nperseg: int, window: str):
-        """Handle FFT parameter changes."""
         self.fft_widget.set_fft_parameters(nperseg, window)
         self.config.fft.nperseg = nperseg
         self.config.fft.window = window
-        self.statusBar().showMessage(f"FFT updated: segment size={nperseg}, window={window}", 2000)
-    
+        self.statusBar().showMessage(f'FFT updated: segment size={nperseg}, window={window}', 2000)
+
     def on_label_selected(self, label_name: str, color: tuple):
-        """Handle annotation label selection."""
         self.current_annotation_label = label_name
         self.timeseries_widget.set_active_label(label_name, color)
-        self.statusBar().showMessage(f"Active annotation label: {label_name}")
-    
+        self.statusBar().showMessage(f'Active annotation label: {label_name}')
+
     def on_annotations_changed(self):
-        """Handle changes to annotations (created, edited, deleted)."""
-        # Update main window annotations list
         self.annotations = self.timeseries_widget.get_annotations()
-        
-        # Update spectrogram with annotations overlay
         self.spectrogram_widget.set_annotations(self.annotations)
-        
-        # Update status bar
-        self.statusBar().showMessage(f"Total annotations: {len(self.annotations)}")
-    
+        self.statusBar().showMessage(f'Total annotations: {len(self.annotations)}')
+
     def on_annotation_selected(self, annotation):
-        """Handle annotation selection."""
         if annotation:
             self.statusBar().showMessage(
                 f"Selected: '{annotation.label}' ({annotation.start_time:.2f}s - {annotation.end_time:.2f}s) | "
-                f"Press Delete key to remove"
+                f'Press Delete key to remove'
             )
         else:
-            self.statusBar().showMessage("No annotation selected")
-    
+            self.statusBar().showMessage('No annotation selected')
+
     def on_view_range_changed(self, x_min: float, x_max: float):
-        """Handle view range changes in time series and sync to spectrogram."""
         if self.is_syncing_views:
             return
-        
         try:
             self.is_syncing_views = True
-            # Update spectrogram x-axis to match time series view
             self.spectrogram_widget.set_x_range(x_min, x_max)
         finally:
             self.is_syncing_views = False
-    
+
     def on_spectrogram_view_range_changed(self, x_min: float, x_max: float):
-        """Handle view range changes in spectrogram and sync to time series."""
         if self.is_syncing_views:
             return
-        
         try:
             self.is_syncing_views = True
-            # Update time series x-axis to match spectrogram view
             if self.timeseries_widget.plot_widgets:
-                # Mark as updating to prevent signal recursion
                 self.timeseries_widget.is_updating_range = True
                 self.timeseries_widget.plot_widgets[0].setXRange(x_min, x_max, padding=0)
                 self.timeseries_widget.is_updating_range = False
         finally:
             self.is_syncing_views = False
-    
+
     def on_spectrogram_annotations_changed(self):
-        """Handle annotation changes from spectrogram widget."""
-        # Get current annotations from spectrogram (they've been edited or created)
         self.annotations = self.spectrogram_widget.annotations
-        
-        # Update timeseries with the same annotations
-        # This will add new annotations created in spectrogram to timeseries
         self.timeseries_widget.load_annotations(self.annotations)
-        
-        # Update status bar
-        self.statusBar().showMessage(f"Total annotations: {len(self.annotations)}")
-    
+        self.statusBar().showMessage(f'Total annotations: {len(self.annotations)}')
+
     def on_spectrogram_region_changed(self, start: float, end: float):
-        """Handle region changes from spectrogram widget."""
-        # Update timeseries region to match spectrogram
         if self.timeseries_widget and hasattr(self.timeseries_widget, 'region_items'):
             if self.timeseries_widget.region_items:
-                # Update the first region (they're all synced internally)
-                self.timeseries_widget.region_items[0].blockSignals(True)
-                self.timeseries_widget.region_items[0].setRegion([start, end])
-                self.timeseries_widget.region_items[0].blockSignals(False)
-                
-                # Update input fields
+                for region_item in self.timeseries_widget.region_items:
+                    region_item.blockSignals(True)
+                    region_item.setRegion([start, end])
+                    region_item.blockSignals(False)
                 self.timeseries_widget.update_inputs_from_region()
-    
+                self.timeseries_widget.region_changed.emit(start, end)
+
     def start_playback(self, widget):
-        """
-        Start playback in the given widget.
-        Ensures only one tab can play at a time (prevents sounddevice conflicts).
-        """
-        # If another tab is playing, stop it first
         if self.is_playing and self.active_playback_widget != widget:
-            print(f"[DEBUG] Stopping playback in {self.active_playback_widget.__class__.__name__} before starting in {widget.__class__.__name__}")
+            print(f'[DEBUG] Stopping playback in {self.active_playback_widget.__class__.__name__} before starting in {widget.__class__.__name__}')
             self.active_playback_widget.stop_playback()
-        
-        # Now start playback in the requested widget
         self.active_playback_widget = widget
         return True
-    
+
     def stop_playback_global(self):
-        """
-        Stop playback in the active widget (called globally).
-        Coordinates across tabs to prevent race conditions.
-        """
         if self.is_playing and self.active_playback_widget:
             self.active_playback_widget.stop_playback()
-    
+
     def apply_config(self):
-        """Apply current configuration to all widgets."""
-        # Apply labels to annotation panel
         self.annotation_panel.clear_labels()
         for label_config in self.config.labels:
             self.annotation_panel.add_label(label_config.name, label_config.color)
-        
-        # Apply STFT parameters
-        self.parameter_panel.set_window_size(self.config.stft.window_size)
-        self.parameter_panel.set_overlap(self.config.stft.overlap)
-        self.parameter_panel.set_window_type(self.config.stft.window_type)
-        self.parameter_panel.set_db_transform(
+
+        self.stft_panel.set_window_size(self.config.stft.window_size)
+        self.stft_panel.set_overlap(self.config.stft.overlap)
+        self.stft_panel.set_window_type(self.config.stft.window_type)
+        self.stft_panel.set_db_transform(
             self.config.stft.use_db,
             self.config.stft.db_ref,
             self.config.stft.vmin,
             self.config.stft.vmax
         )
-        
-        # Apply FFT parameters
-        self.parameter_panel.set_fft_parameters(self.config.fft.nperseg, self.config.fft.window)
+
+        self.fft_panel.set_fft_parameters(self.config.fft.nperseg, self.config.fft.window)
         self.fft_widget.set_fft_parameters(self.config.fft.nperseg, self.config.fft.window)
-        
-        # Update spectrogram with new parameters
+
+        if self.config.channel_names:
+            for sensor_data in self.datasets.values():
+                sensor_data.apply_channel_names_from_config(self.config.channel_names)
+            self.timeseries_widget.refresh_all_traces()
+            if self.sensor_data:
+                self.fft_widget.set_data(self.sensor_data)
+                self.spectrogram_widget.set_data(self.sensor_data)
+                if self.annotations:
+                    self.spectrogram_widget.set_annotations(self.annotations)
+                self.fft_panel.update_channel_list(self.sensor_data.channel_names)
+            self._refresh_manipulation_channels()
+
         if self.sensor_data:
             self.on_stft_parameters_changed(
                 self.config.stft.window_size,
@@ -656,72 +811,97 @@ class MainWindow(QMainWindow):
                 self.config.stft.vmin,
                 self.config.stft.vmax
             )
-    
+
+        if self.config.enabled_manipulations:
+            self._enabled_manipulations = list(self.config.enabled_manipulations)
+            save_enabled_manipulations(self._enabled_manipulations)
+            self.manipulation_panel.set_enabled(self._enabled_manipulations)
+            self._refresh_manipulation_channels()
+
+        if self.config.loaded_files:
+            for file_cfg in self.config.loaded_files:
+                if file_cfg.dataset_id in self.datasets:
+                    continue
+                if not os.path.exists(file_cfg.path):
+                    self.statusBar().showMessage(
+                        f'File not found (skipped): {file_cfg.path}',
+                        3000,
+                    )
+                    continue
+                try:
+                    sensor_data = load_data(file_cfg.path)
+                    if file_cfg.channel_names:
+                        for i, name in enumerate(file_cfg.channel_names):
+                            if i < len(sensor_data.channel_names):
+                                sensor_data.channel_names[i] = name
+                    dataset_id = file_cfg.dataset_id
+                    if dataset_id in self.datasets:
+                        dataset_id = self._make_dataset_id(file_cfg.path)
+                    self.timeseries_widget.add_dataset(dataset_id, sensor_data, 'separate', None)
+                    self.datasets[dataset_id] = sensor_data
+                    self.sensor_data = sensor_data
+                    self.fft_widget.set_data(sensor_data)
+                    self.spectrogram_widget.set_data(sensor_data)
+                    self.fft_panel.update_channel_list(sensor_data.channel_names)
+                    self.data_mgmt_panel.refresh(
+                        self.timeseries_widget.plot_boxes,
+                        self.timeseries_widget.datasets,
+                    )
+                    self._refresh_manipulation_channels()
+                except Exception as e:
+                    self.statusBar().showMessage(
+                        f'Error reloading {file_cfg.path}: {e}',
+                        3000,
+                    )
+
     def load_config_file(self):
-        """Load configuration from JSON file."""
         filename, _ = QFileDialog.getOpenFileName(
             self,
-            "Load Configuration",
-            "",
-            "JSON Files (*.json);;All Files (*)"
+            'Load Configuration',
+            '',
+            'JSON Files (*.json);;All Files (*)'
         )
-        
         if filename:
             try:
-                import json
                 self.config = AppConfig.load(filename)
-                
-                # If data is already loaded, apply the channel names from the new config
-                if self.sensor_data and self.config.channel_names:
-                    self.sensor_data.apply_channel_names_from_config(self.config.channel_names)
-                    # Update parameter panel with new channel names
-                    self.parameter_panel.update_channel_list(self.sensor_data.channel_names)
-                
                 self.apply_config()
-                self.statusBar().showMessage(f"✓ Configuration loaded successfully", 2000)
+                self.statusBar().showMessage('? Configuration loaded successfully', 2000)
             except FileNotFoundError:
-                self.statusBar().showMessage(f"✗ Configuration file not found: {filename}", 2000)
+                self.statusBar().showMessage(f'? Configuration file not found: {filename}', 2000)
             except Exception as e:
-                self.statusBar().showMessage(f"✗ Error loading configuration: {str(e)}", 2000)
-    
+                self.statusBar().showMessage(f'? Error loading configuration: {str(e)}', 2000)
+
     def save_config_file(self):
-        """Save current configuration to JSON file."""
-        # Update config with current widget values
         self.update_config_from_widgets()
-        
         filename, _ = QFileDialog.getSaveFileName(
             self,
-            "Save Configuration",
-            "config.json",
-            "JSON Files (*.json);;All Files (*)"
+            'Save Configuration',
+            'config.json',
+            'JSON Files (*.json);;All Files (*)'
         )
-        
         if filename:
             try:
                 self.config.save(filename)
-                self.statusBar().showMessage(f"Configuration saved to {filename}", 3000)
+                self.statusBar().showMessage(f'Configuration saved to {filename}', 3000)
                 QMessageBox.information(
                     self,
-                    "Config Saved",
-                    f"Configuration successfully saved to:\n{filename}"
+                    'Config Saved',
+                    f'Configuration successfully saved to:\n{filename}'
                 )
             except Exception as e:
                 QMessageBox.critical(
                     self,
-                    "Error",
-                    f"Error saving configuration:\n{str(e)}"
+                    'Error',
+                    f'Error saving configuration:\n{str(e)}'
                 )
-    
+
     def update_config_from_widgets(self):
-        """Update configuration object with current widget values."""
-        # Update labels from annotation panel
         self.config.labels = []
         for name, color in self.annotation_panel.get_all_labels():
             from src.utils.config import LabelConfig
             self.config.labels.append(LabelConfig(name, color))
-        
-        # Update STFT parameters from parameter panel
-        params = self.parameter_panel.get_all_parameters()
+
+        params = self.stft_panel.get_all_parameters()
         self.config.stft.window_size = params['window_size']
         self.config.stft.overlap = params['overlap']
         self.config.stft.window_type = params['window_type']
@@ -729,3 +909,28 @@ class MainWindow(QMainWindow):
         self.config.stft.db_ref = params['db_ref']
         self.config.stft.vmin = params['vmin']
         self.config.stft.vmax = params['vmax']
+
+        fft_nperseg, fft_window = self.fft_panel.get_fft_parameters()
+        self.config.fft.nperseg = fft_nperseg
+        self.config.fft.window = fft_window
+
+        if self.sensor_data:
+            self.config.channel_names = list(self.sensor_data.channel_names)
+
+        from src.utils.config import LoadedFileConfig, ManipulationOptionConfig
+
+        self.config.loaded_files = []
+        for dataset_id, sensor_data in self.datasets.items():
+            if sensor_data.filename:
+                self.config.loaded_files.append(LoadedFileConfig(
+                    path=sensor_data.filename,
+                    dataset_id=dataset_id,
+                    channel_names=list(sensor_data.channel_names),
+                ))
+
+        self.config.manipulations = []
+        self.config.enabled_manipulations = list(self._enabled_manipulations)
+        for name in self._enabled_manipulations:
+            self.config.manipulations.append(
+                ManipulationOptionConfig(name=name, options={})
+            )

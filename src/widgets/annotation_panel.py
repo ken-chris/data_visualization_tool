@@ -2,12 +2,13 @@
 Annotation panel for managing annotation labels and categories.
 """
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QGroupBox, QListWidget, QPushButton,
+    QWidget, QVBoxLayout, QListWidget, QPushButton,
     QHBoxLayout, QInputDialog, QColorDialog, QListWidgetItem, QMessageBox
 )
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QColor, QBrush
 from typing import Dict, Optional
+from src.widgets.parameter_panel import CollapsibleSection
 
 
 class AnnotationPanel(QWidget):
@@ -39,42 +40,44 @@ class AnnotationPanel(QWidget):
     def init_ui(self):
         """Initialize the user interface."""
         main_layout = QVBoxLayout(self)
-        
-        # Annotation Labels Group
-        labels_group = QGroupBox("Annotation Labels")
-        labels_layout = QVBoxLayout()
-        
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(2)
+
+        # Annotation Labels collapsible section
+        labels_section = CollapsibleSection("Annotation Labels")
+
         # Label list
         self.label_list = QListWidget()
         self.label_list.itemClicked.connect(self.on_label_clicked)
         self.label_list.itemDoubleClicked.connect(self.edit_label)
-        labels_layout.addWidget(self.label_list)
-        
+        labels_section.add_widget(self.label_list)
+
         # Buttons
-        btn_layout = QHBoxLayout()
-        
+        btn_widget = QWidget()
+        btn_layout = QHBoxLayout(btn_widget)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+
         add_btn = QPushButton("Add")
         add_btn.clicked.connect(self.add_label)
         btn_layout.addWidget(add_btn)
-        
+
         edit_btn = QPushButton("Edit")
         edit_btn.clicked.connect(self.edit_label)
         btn_layout.addWidget(edit_btn)
-        
+
         remove_btn = QPushButton("Remove")
         remove_btn.clicked.connect(self.remove_label)
         btn_layout.addWidget(remove_btn)
-        
-        labels_layout.addLayout(btn_layout)
-        
+
+        labels_section.add_widget(btn_widget)
+
         # Change color button
         color_btn = QPushButton("Change Color")
         color_btn.clicked.connect(self.change_label_color)
-        labels_layout.addWidget(color_btn)
-        
-        labels_group.setLayout(labels_layout)
-        main_layout.addWidget(labels_group)
-        
+        labels_section.add_widget(color_btn)
+
+        main_layout.addWidget(labels_section)
+
         # Add stretch
         main_layout.addStretch()
     

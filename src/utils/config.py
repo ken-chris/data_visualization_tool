@@ -130,6 +130,47 @@ class DataConfig:
 
 
 @dataclass
+class ManipulationOptionConfig:
+    """Configuration for a manipulation's saved option values."""
+    name: str
+    options: dict
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'ManipulationOptionConfig':
+        """Create from dictionary."""
+        return cls(name=data['name'], options=data.get('options', {}))
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {'name': self.name, 'options': self.options}
+
+
+@dataclass
+class LoadedFileConfig:
+    """Configuration for a previously loaded dataset."""
+    path: str
+    dataset_id: str
+    channel_names: List[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> 'LoadedFileConfig':
+        """Create from dictionary."""
+        return cls(
+            path=data['path'],
+            dataset_id=data['dataset_id'],
+            channel_names=data.get('channel_names', []),
+        )
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        return {
+            'path': self.path,
+            'dataset_id': self.dataset_id,
+            'channel_names': self.channel_names,
+        }
+
+
+@dataclass
 class AppConfig:
     """Main application configuration."""
     channel_names: List[str] = field(default_factory=list)
@@ -138,6 +179,9 @@ class AppConfig:
     fft: FFTConfig = field(default_factory=FFTConfig)
     ui: UIConfig = field(default_factory=UIConfig)
     data: DataConfig = field(default_factory=DataConfig)
+    loaded_files: List[LoadedFileConfig] = field(default_factory=list)
+    manipulations: List[ManipulationOptionConfig] = field(default_factory=list)
+    enabled_manipulations: List[str] = field(default_factory=list)
     
     @classmethod
     def from_dict(cls, data: dict) -> 'AppConfig':
@@ -148,6 +192,15 @@ class AppConfig:
         fft = FFTConfig.from_dict(data.get('fft', {}))
         ui = UIConfig.from_dict(data.get('ui', {}))
         data_config = DataConfig.from_dict(data.get('data', {}))
+        loaded_files = [
+            LoadedFileConfig.from_dict(file_config)
+            for file_config in data.get('loaded_files', [])
+        ]
+        manipulations = [
+            ManipulationOptionConfig.from_dict(manip_config)
+            for manip_config in data.get('manipulations', [])
+        ]
+        enabled_manipulations = data.get('enabled_manipulations', [])
         
         return cls(
             channel_names=channel_names,
@@ -155,7 +208,10 @@ class AppConfig:
             stft=stft,
             fft=fft,
             ui=ui,
-            data=data_config
+            data=data_config,
+            loaded_files=loaded_files,
+            manipulations=manipulations,
+            enabled_manipulations=enabled_manipulations,
         )
     
     def to_dict(self) -> dict:
@@ -166,7 +222,10 @@ class AppConfig:
             'stft': self.stft.to_dict(),
             'fft': self.fft.to_dict(),
             'ui': self.ui.to_dict(),
-            'data': self.data.to_dict()
+            'data': self.data.to_dict(),
+            'loaded_files': [file_config.to_dict() for file_config in self.loaded_files],
+            'manipulations': [manip_config.to_dict() for manip_config in self.manipulations],
+            'enabled_manipulations': self.enabled_manipulations,
         }
     
     @classmethod
@@ -217,5 +276,8 @@ class AppConfig:
             stft=STFTConfig(),
             fft=FFTConfig(),
             ui=UIConfig(),
-            data=DataConfig()
+            data=DataConfig(),
+            loaded_files=[],
+            manipulations=[],
+            enabled_manipulations=[],
         )

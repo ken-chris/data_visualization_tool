@@ -1,0 +1,6 @@
+{
+  "enabled": [
+    "Normalize",
+    "Butterworth Filter"
+  ]
+}

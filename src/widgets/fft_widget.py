@@ -29,6 +29,10 @@ class FFTWidget(QWidget):
         self.fft_nperseg: int = 256
         self.fft_window: str = 'hann'
         
+        # Channel filter: None means all channels
+        self.active_channels: Optional[List[int]] = None
+        self._active_channel_indices: List[int] = []
+        
         self.init_ui()
     
     def init_ui(self):
@@ -67,10 +71,13 @@ class FFTWidget(QWidget):
         self.sensor_data = sensor_data
         self.clear_plots()
         
-        # Create a plot for each channel
+        channels = self._get_channels_to_show()
+        self._active_channel_indices = channels
+        
+        # Create a plot for each active channel
         colors = ['r', 'g', 'b', 'c', 'm', 'y', 'k']
         
-        for i in range(sensor_data.n_channels):
+        for pos, ch_idx in enumerate(channels):
             
             # Create container for this channel (plot + info)
             channel_container = QWidget()
@@ -82,16 +89,16 @@ class FFTWidget(QWidget):
             plot_widget = pg.PlotWidget()
             plot_widget.setBackground('w')
             plot_widget.showGrid(x=True, y=True, alpha=0.3)
-            plot_widget.setLabel('left', f'{sensor_data.channel_names[i]} - Magnitude')
+            plot_widget.setLabel('left', f'{sensor_data.channel_names[ch_idx]} - Magnitude')
             
             # Only show x-axis label on last plot
-            if i == sensor_data.n_channels - 1:
+            if pos == len(channels) - 1:
                 plot_widget.setLabel('bottom', 'Frequency', units='Hz')
             else:
                 plot_widget.getAxis('bottom').setStyle(showValues=False)
             
             plot_widget.setMinimumHeight(200)
-            plot_widget.setMaximumHeight(250)  # Match time series and spectrogram
+            plot_widget.setMaximumHeight(250)
             plot_widget.setAntialiasing(True)
             
             channel_layout.addWidget(plot_widget)
@@ -151,16 +158,16 @@ class FFTWidget(QWidget):
         # Define colors
         colors = ['r', 'g', 'b', 'c', 'm', 'y', 'k']
         
-        # Compute FFT for all channels
-        for i in range(self.sensor_data.n_channels):
-            plot_widget = self.plot_widgets[i]
-            info_label = self.info_labels[i]
+        # Compute FFT for all active channels
+        for pos, ch_idx in enumerate(self._active_channel_indices):
+            plot_widget = self.plot_widgets[pos]
+            info_label = self.info_labels[pos]
             
             # Clear previous plot
             plot_widget.clear()
             
             # Get channel data
-            channel_data = data_slice[:, i]
+            channel_data = data_slice[:, ch_idx]
             frequencies, magnitudes = compute_fft(channel_data, self.sensor_data.sample_rate, self.fft_nperseg, self.fft_window)
             
             # Plot FFT with black color for all channels
@@ -188,14 +195,14 @@ class FFTWidget(QWidget):
                 )
                 
                 # Display peak info
-                peak_text = f"<b>{self.sensor_data.channel_names[i]} Peaks:</b> "
+                peak_text = f"<b>{self.sensor_data.channel_names[ch_idx]} Peaks:</b> "
                 peak_strs = [f"{frequencies[idx]:.2f} Hz" for idx in peak_indices[:3]]
                 peak_text += ", ".join(peak_strs)
                 if len(peak_indices) > 3:
                     peak_text += f" (+{len(peak_indices)-3} more)"
                 info_label.setText(peak_text)
             else:
-                info_label.setText(f"{self.sensor_data.channel_names[i]}: No significant peaks found")
+                info_label.setText(f"{self.sensor_data.channel_names[ch_idx]}: No significant peaks found")
         
         # Update overall info
         self.overall_info.setText(
@@ -213,3 +220,18 @@ class FFTWidget(QWidget):
         """
         self.fft_nperseg = nperseg
         self.fft_window = window
+
+    def _get_channels_to_show(self) -> List[int]:
+        """Return channel indices to display, respecting active_channels filter."""
+        if self.sensor_data is None:
+            return []
+        all_ch = list(range(self.sensor_data.n_channels))
+        if self.active_channels is None:
+            return all_ch
+        return [i for i in self.active_channels if 0 <= i < self.sensor_data.n_channels]
+
+    def set_active_channels(self, channel_indices: List[int]):
+        """Filter which channels are shown. Rebuilds plots immediately if data is loaded."""
+        self.active_channels = channel_indices
+        if self.sensor_data is not None:
+            self.set_data(self.sensor_data)

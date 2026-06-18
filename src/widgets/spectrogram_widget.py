@@ -4,7 +4,7 @@ Spectrogram viewer widget for STFT visualization.
 import pyqtgraph as pg
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel, 
-    QPushButton, QComboBox, QMessageBox
+    QPushButton, QComboBox, QMessageBox, QLineEdit
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from typing import Optional, List, Dict, Tuple
@@ -74,6 +74,10 @@ class SpectrogramWidget(QWidget):
         self.vmin = -80
         self.vmax = 0
         
+        # Channel filter: None means all channels
+        self.active_channels: Optional[List[int]] = None
+        self._active_channel_indices: List[int] = []
+        
         # Flag to prevent signal recursion
         self.is_updating_range = False
         
@@ -91,30 +95,49 @@ class SpectrogramWidget(QWidget):
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Controls layout
+        # Create scroll area for plots
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Container widget for plots
+        self.plots_container = QWidget()
+        self.plots_layout = QVBoxLayout(self.plots_container)
+        self.plots_layout.setSpacing(2)
+        self.plots_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.scroll_area.setWidget(self.plots_container)
+        main_layout.addWidget(self.scroll_area)
+        
+        # Region selection controls (at bottom to match timeseries widget)
         controls_layout = QHBoxLayout()
         
-        # Channel selection dropdown for playback
-        controls_layout.addWidget(QLabel("Play Channel:"))
-        self.channel_combo = QComboBox()
-        self.channel_combo.setToolTip("Select which channel to play")
-        self.channel_combo.setMaximumWidth(120)
-        controls_layout.addWidget(self.channel_combo)
+        controls_layout.addWidget(QLabel("Region:"))
         
-        # Play segment button
-        self.play_button = QPushButton("▶ Play Segment")
-        self.play_button.clicked.connect(self.play_selected_segment)
-        self.play_button.setToolTip("Play the highlighted region as audio")
-        self.play_button.setMaximumWidth(140)
-        controls_layout.addWidget(self.play_button)
+        self.start_edit = QLineEdit()
+        self.start_edit.setPlaceholderText("Start (s)")
+        self.start_edit.setMaximumWidth(100)
+        self.start_edit.returnPressed.connect(self.update_region_from_inputs)
+        controls_layout.addWidget(self.start_edit)
         
-        # Stop playback button
-        self.stop_button = QPushButton("⏹ Stop Playback")
-        self.stop_button.clicked.connect(self.stop_playback)
-        self.stop_button.setToolTip("Stop audio playback")
-        self.stop_button.setMaximumWidth(140)
-        self.stop_button.setEnabled(False)  # Disabled until playback starts
-        controls_layout.addWidget(self.stop_button)
+        controls_layout.addWidget(QLabel("to"))
+        
+        self.end_edit = QLineEdit()
+        self.end_edit.setPlaceholderText("End (s)")
+        self.end_edit.setMaximumWidth(100)
+        self.end_edit.returnPressed.connect(self.update_region_from_inputs)
+        controls_layout.addWidget(self.end_edit)
+        
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self.update_region_from_inputs)
+        controls_layout.addWidget(apply_btn)
+        
+        # Jump To button - sets x-axis range to selected values
+        jump_to_btn = QPushButton("Jump To")
+        jump_to_btn.clicked.connect(self.jump_to_range)
+        jump_to_btn.setToolTip("Jump to the specified time range (sets the zoom/pan)")
+        controls_layout.addWidget(jump_to_btn)
         
         # Home selection button
         home_selection_btn = QPushButton("Home Selection")
@@ -122,6 +145,34 @@ class SpectrogramWidget(QWidget):
         home_selection_btn.setToolTip("Move selection to 10%-30% of currently visible segment")
         home_selection_btn.setMaximumWidth(140)
         controls_layout.addWidget(home_selection_btn)
+
+        select_all_btn = QPushButton("Select All")
+        select_all_btn.clicked.connect(self.select_all)
+        select_all_btn.setToolTip("Set region to cover all loaded data")
+        controls_layout.addWidget(select_all_btn)
+        
+        # # Audio playback controls (commented out for general data exploration)
+        # # Channel selection dropdown for playback
+        # controls_layout.addWidget(QLabel("Play Channel:"))
+        # self.channel_combo = QComboBox()
+        # self.channel_combo.setToolTip("Select which channel to play")
+        # self.channel_combo.setMaximumWidth(120)
+        # controls_layout.addWidget(self.channel_combo)
+        # 
+        # # Play segment button
+        # self.play_button = QPushButton("▶ Play Segment")
+        # self.play_button.clicked.connect(self.play_selected_segment)
+        # self.play_button.setToolTip("Play the highlighted region as audio")
+        # self.play_button.setMaximumWidth(140)
+        # controls_layout.addWidget(self.play_button)
+        # 
+        # # Stop playback button
+        # self.stop_button = QPushButton("⏹ Stop Playback")
+        # self.stop_button.clicked.connect(self.stop_playback)
+        # self.stop_button.setToolTip("Stop audio playback")
+        # self.stop_button.setMaximumWidth(140)
+        # self.stop_button.setEnabled(False)  # Disabled until playback starts
+        # controls_layout.addWidget(self.stop_button)
         
         controls_layout.addStretch()
         
@@ -140,22 +191,7 @@ class SpectrogramWidget(QWidget):
         controls_layout.addWidget(clear_annotations_btn)
         
         main_layout.addLayout(controls_layout)
-        
-        # Create scroll area for plots
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        
-        # Container widget for plots
-        self.plots_container = QWidget()
-        self.plots_layout = QVBoxLayout(self.plots_container)
-        self.plots_layout.setSpacing(2)
-        self.plots_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.scroll_area.setWidget(self.plots_container)
-        main_layout.addWidget(self.scroll_area)
-        
+
         # Overall info panel at bottom
         self.overall_info = QLabel()
         self.overall_info.setMaximumHeight(30)
@@ -172,15 +208,18 @@ class SpectrogramWidget(QWidget):
         self.sensor_data = sensor_data
         self.clear_plots()
         
-        # Create a plot for each channel
-        for i in range(sensor_data.n_channels):
+        channels = self._get_channels_to_show()
+        self._active_channel_indices = channels
+        
+        # Create a plot for each active channel
+        for pos, ch_idx in enumerate(channels):
             # Create plot widget
             plot_widget = pg.PlotWidget()
             plot_widget.setBackground('w')
-            plot_widget.setLabel('left', f'{sensor_data.channel_names[i]} - Frequency', units='Hz')
+            plot_widget.setLabel('left', f'{sensor_data.channel_names[ch_idx]} - Frequency', units='Hz')
             
             # Only show x-axis label on last plot
-            if i == sensor_data.n_channels - 1:
+            if pos == len(channels) - 1:
                 plot_widget.setLabel('bottom', 'Time', units='s')
             else:
                 plot_widget.getAxis('bottom').setStyle(showValues=False)
@@ -225,10 +264,8 @@ class SpectrogramWidget(QWidget):
                 for i, channel_name in enumerate(sensor_data.channel_names):
                     self.channel_combo.addItem(f"Channel {i}: {channel_name}", i)
             else:
-                # Fallback: create generic channel names based on n_channels
                 for i in range(sensor_data.n_channels):
                     self.channel_combo.addItem(f"Channel {i}", i)
-            # Set first channel as default
             if self.channel_combo.count() > 0:
                 self.channel_combo.setCurrentIndex(0)
         
@@ -296,6 +333,68 @@ class SpectrogramWidget(QWidget):
         # Update all regions
         for plot_widget, region_item in self.region_items:
             region_item.setRegion(list(normalize_region(start, end)))
+        
+        # Update input fields
+        self.update_inputs_from_region()
+
+    def select_all(self):
+        """Set the selection region to the full data range."""
+        if self.sensor_data is None or not self.region_items:
+            return
+        start = float(self.sensor_data.timestamps[0])
+        end = float(self.sensor_data.timestamps[-1])
+        for _, region_item in self.region_items:
+            region_item.blockSignals(True)
+            region_item.setRegion([start, end])
+            region_item.blockSignals(False)
+        self.update_inputs_from_region()
+        self.region_changed.emit(start, end)
+
+    def update_inputs_from_region(self):
+        """Update input fields from current region."""
+        if not self.region_items:
+            return
+        
+        plot_widget, region_item = self.region_items[0]
+        start, end = region_item.getRegion()
+        self.start_edit.setText(f"{start:.3f}")
+        self.end_edit.setText(f"{end:.3f}")
+    
+    def update_region_from_inputs(self):
+        """Update region from input field values."""
+        if not self.region_items:
+            return
+        
+        try:
+            start = float(self.start_edit.text())
+            end = float(self.end_edit.text())
+            
+            # Normalize so start <= end
+            start, end = normalize_region(start, end)
+            
+            # Update all regions
+            for plot_widget, region_item in self.region_items:
+                region_item.setRegion([start, end])
+            
+        except ValueError:
+            # Invalid input, reset to current region
+            self.update_inputs_from_region()
+    
+    def jump_to_range(self):
+        """Jump to the specified time range by setting x-axis zoom/pan."""
+        try:
+            start = float(self.start_edit.text())
+            end = float(self.end_edit.text())
+            
+            # Normalize so start <= end
+            start, end = normalize_region(start, end)
+            
+            # Set x-range on this spectrogram widget
+            self.set_x_range(start, end)
+            
+        except ValueError:
+            # Invalid input, ignore
+            pass
     
     def clear_plots(self):
         """Clear all existing plots."""
@@ -348,14 +447,29 @@ class SpectrogramWidget(QWidget):
                 x_range, y_range = saved_view_ranges[i]
                 plot_widget.setXRange(x_range[0], x_range[1], padding=0)
                 plot_widget.setYRange(y_range[0], y_range[1], padding=0)
-    
+
+    def _get_channels_to_show(self) -> List[int]:
+        """Return channel indices to display, respecting active_channels filter."""
+        if self.sensor_data is None:
+            return []
+        all_ch = list(range(self.sensor_data.n_channels))
+        if self.active_channels is None:
+            return all_ch
+        return [i for i in self.active_channels if 0 <= i < self.sensor_data.n_channels]
+
+    def set_active_channels(self, channel_indices: List[int]):
+        """Filter which channels are shown. Rebuilds plots immediately if data is loaded."""
+        self.active_channels = channel_indices
+        if self.sensor_data is not None:
+            self.set_data(self.sensor_data)
+
     def update_all_spectrograms(self):
-        """Compute and display STFT spectrograms for all channels."""
+        """Compute and display STFT spectrograms for all active channels."""
         if self.sensor_data is None:
             return
         
-        for i in range(self.sensor_data.n_channels):
-            self.update_spectrogram_for_channel(i)
+        for plot_idx in range(len(self._active_channel_indices)):
+            self.update_spectrogram_for_channel(plot_idx)
         
         # Update overall info
         db_status = f", dB scale (ref={self.db_ref:.0e}, range=[{self.vmin}, {self.vmax}]dB)" if self.use_db else ", linear scale"
@@ -364,19 +478,21 @@ class SpectrogramWidget(QWidget):
             f"overlap={self.overlap*100:.0f}%, type={self.window_type}{db_status}"
         )
     
-    def update_spectrogram_for_channel(self, channel_idx: int):
+    def update_spectrogram_for_channel(self, plot_idx: int):
         """
-        Compute and display STFT spectrogram for a specific channel.
+        Compute and display STFT spectrogram for a specific plot slot.
         
         Args:
-            channel_idx: Index of channel to visualize
+            plot_idx: Position index into plot_widgets (maps to _active_channel_indices)
         """
-        if self.sensor_data is None or channel_idx >= len(self.plot_widgets):
+        if self.sensor_data is None or plot_idx >= len(self.plot_widgets):
             return
         
-        plot_widget = self.plot_widgets[channel_idx]
-        image_item = self.image_items[channel_idx]
-        color_bar = self.color_bars[channel_idx]
+        channel_idx = self._active_channel_indices[plot_idx]
+        
+        plot_widget = self.plot_widgets[plot_idx]
+        image_item = self.image_items[plot_idx]
+        color_bar = self.color_bars[plot_idx]
         
         # Get channel data
         channel_data = self.sensor_data.get_channel(channel_idx)
@@ -405,8 +521,8 @@ class SpectrogramWidget(QWidget):
         # Set image data (transpose for correct orientation)
         image_item.setImage(spectrogram_transformed.T, autoLevels=True)
         
-        # Set color map
-        self.set_colormap_for_channel(channel_idx, 'viridis')
+        # Set color map — pass plot_idx (position), not channel_idx
+        self.set_colormap_for_channel(plot_idx, 'viridis')
         
         # Scale and position the image to match time and frequency axes
         time_min, time_max = times[0], times[-1]
@@ -430,19 +546,19 @@ class SpectrogramWidget(QWidget):
         vmin_actual, vmax_actual = spectrogram_transformed.min(), spectrogram_transformed.max()
         color_bar.setLevels((vmin_actual, vmax_actual))
     
-    def set_colormap_for_channel(self, channel_idx: int, colormap_name: str):
+    def set_colormap_for_channel(self, plot_idx: int, colormap_name: str):
         """
-        Set the colormap for a specific channel's spectrogram.
+        Set the colormap for a specific plot slot.
         
         Args:
-            channel_idx: Index of channel
+            plot_idx: Plot position index (not channel data index)
             colormap_name: Name of colormap
         """
-        if channel_idx >= len(self.image_items):
+        if plot_idx >= len(self.image_items):
             return
         
-        image_item = self.image_items[channel_idx]
-        color_bar = self.color_bars[channel_idx]
+        image_item = self.image_items[plot_idx]
+        color_bar = self.color_bars[plot_idx]
         
         try:
             cmap = pg.colormap.get(colormap_name, source='matplotlib')
@@ -870,6 +986,10 @@ class SpectrogramWidget(QWidget):
                 other_region.blockSignals(True)
                 other_region.setRegion([start, end])
                 other_region.blockSignals(False)
+        
+        # Update input fields
+        self.start_edit.setText(f"{start:.3f}")
+        self.end_edit.setText(f"{end:.3f}")
         
         # Emit signal to notify main window so timeseries can update
         self.region_changed.emit(start, end)
