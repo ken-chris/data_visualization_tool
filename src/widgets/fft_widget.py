@@ -82,6 +82,7 @@ class FFTWidget(QWidget):
             
             # Create container for this channel (plot + info)
             channel_container = QWidget()
+            channel_container.setFixedHeight(220)
             channel_layout = QVBoxLayout(channel_container)
             channel_layout.setContentsMargins(0, 0, 0, 0)
             channel_layout.setSpacing(2)
@@ -98,7 +99,6 @@ class FFTWidget(QWidget):
             else:
                 plot_widget.getAxis('bottom').setStyle(showValues=False)
             
-            plot_widget.setMinimumHeight(200)
             plot_widget.setAntialiasing(True)
             plot_widget.setMenuEnabled(False)
             
