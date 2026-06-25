@@ -134,6 +134,8 @@ class MainWindow(QMainWindow):
 
         self.data_mgmt_panel = DataMgmtPanel()
         self.data_mgmt_panel.load_data_requested.connect(self.open_file)
+        self.data_mgmt_panel.load_config_requested.connect(self.load_config_file)
+        self.data_mgmt_panel.clear_all_data_requested.connect(self.on_clear_all_data)
         self.data_mgmt_panel.channels_applied.connect(self.on_channels_applied)
         self.data_mgmt_panel.channel_deleted.connect(self.on_channel_deleted)
         self.data_mgmt_panel.channel_duplicated.connect(self.on_channel_duplicated)
@@ -358,6 +360,22 @@ class MainWindow(QMainWindow):
             self.timeseries_widget.datasets,
         )
         self.statusBar().showMessage(f"Removed box '{box_name}'", 2000)
+
+    def on_clear_all_data(self):
+        """Remove all datasets and plot boxes, returning to pre-load state. Config is preserved."""
+        for box in list(self.timeseries_widget.plot_boxes):
+            self.timeseries_widget.remove_box(box)
+
+        self.datasets.clear()
+        self.timeseries_widget.datasets.clear()
+        self.sensor_data = None
+
+        self.fft_panel.update_channel_list([])
+        self.spectrogram_widget.clear_plots()
+        self._refresh_manipulation_channels()
+
+        self.data_mgmt_panel.refresh([], {})
+        self.statusBar().showMessage("All data cleared", 3000)
 
     def on_box_duplicated(self, box_name: str):
         """Duplicate a display box with the same traces."""
@@ -669,28 +687,51 @@ class MainWindow(QMainWindow):
         # ── worker thread so UI stays responsive ──────────────────────────
         result_holder: dict = {}
 
+        # Pre-read the column count from the header only (fast — no data loaded)
+        # so we can open the dialog already in determinate mode, avoiding the
+        # indeterminate→determinate transition that causes the flicker.
+        initial_max = 0
+        initial_label = f'Reading {os.path.basename(filename)}…'
+        if filename.lower().endswith('.csv'):
+            try:
+                import pandas as pd
+                header = pd.read_csv(filename, nrows=0)
+                initial_max = max(0, len(header.columns) - 1)  # exclude timestamp col
+            except Exception:
+                pass  # fall back to indeterminate
+
         class _Loader(QThread):
             finished = _pyqtSignal()
             error = _pyqtSignal(str)
+            progress = _pyqtSignal(int, int)   # current, total
 
             def run(self_inner):
                 try:
-                    result_holder['data'] = load_data(filename)
+                    result_holder['data'] = load_data(
+                        filename,
+                        progress_callback=lambda cur, tot: self_inner.progress.emit(cur, tot),
+                    )
                     self_inner.finished.emit()
                 except Exception as exc:
                     result_holder['error'] = str(exc)
                     result_holder['tb'] = traceback.format_exc()
                     self_inner.error.emit(str(exc))
 
-        progress = QProgressDialog(
-            f'Loading {os.path.basename(filename)}…', None, 0, 0, self
-        )
+        progress = QProgressDialog(initial_label, None, 0, initial_max, self)
         progress.setWindowTitle('Loading')
         progress.setWindowModality(Qt.WindowModality.ApplicationModal)
         progress.setMinimumDuration(0)
         progress.setValue(0)
 
         loader = _Loader(self)
+
+        def _on_progress(current: int, total: int):
+            if progress.maximum() != total:
+                progress.setMaximum(total)
+            progress.setLabelText(
+                f'Processing channels… {current} / {total}'
+            )
+            progress.setValue(current)
 
         def _on_done():
             progress.close()
@@ -704,6 +745,7 @@ class MainWindow(QMainWindow):
             )
             self.statusBar().showMessage('Error loading file')
 
+        loader.progress.connect(_on_progress)
         loader.finished.connect(_on_done)
         loader.error.connect(_on_error)
         loader.start()
@@ -1036,6 +1078,7 @@ class MainWindow(QMainWindow):
             try:
                 self.config = AppConfig.load(filename)
                 self.apply_config()
+                self.data_mgmt_panel.mark_config_loaded()
                 self.statusBar().showMessage('? Configuration loaded successfully', 2000)
             except FileNotFoundError:
                 self.statusBar().showMessage(f'? Configuration file not found: {filename}', 2000)

@@ -3,8 +3,8 @@ Spectrogram viewer widget for STFT visualization.
 """
 import pyqtgraph as pg
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel, 
-    QPushButton, QComboBox, QMessageBox, QLineEdit
+    QWidget, QVBoxLayout, QHBoxLayout, QScrollArea, QLabel,
+    QPushButton, QComboBox, QMessageBox, QLineEdit, QDoubleSpinBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from typing import Optional, List, Dict, Tuple
@@ -78,6 +78,7 @@ class SpectrogramWidget(QWidget):
         # Channel filter: None means all channels
         self.active_channels: Optional[List[int]] = None
         self._active_channel_indices: List[int] = []
+        self._plot_containers: List[QWidget] = []  # container widgets wrapping each plot
         
         # Flag to prevent signal recursion
         self.is_updating_range = False
@@ -226,6 +227,7 @@ class SpectrogramWidget(QWidget):
                 plot_widget.getAxis('bottom').setStyle(showValues=False)
             
             plot_widget.setMinimumHeight(200)
+            plot_widget.setMenuEnabled(False)
             
             # Create image item for this channel
             image_item = pg.ImageItem()
@@ -243,10 +245,14 @@ class SpectrogramWidget(QWidget):
             self.plot_widgets.append(plot_widget)
             self.image_items.append(image_item)
             self.color_bars.append(color_bar)
-            
-            # Add plot and a resize handle to layout
-            self.plots_layout.addWidget(plot_widget)
-            self.plots_layout.addWidget(ResizeHandle(plot_widget))
+
+            # Wrap in a container with a Y-range control header
+            container = self._create_plot_container(plot_widget)
+            self._plot_containers.append(container)
+
+            # Add container and a resize handle to layout
+            self.plots_layout.addWidget(container)
+            self.plots_layout.addWidget(ResizeHandle(container))
         
         # Link x-axes of all plots
         if len(self.plot_widgets) > 1:
@@ -403,10 +409,87 @@ class SpectrogramWidget(QWidget):
             item = self.plots_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        
+
         self.plot_widgets.clear()
         self.image_items.clear()
         self.color_bars.clear()
+        self._plot_containers.clear()
+
+    def _create_plot_container(self, plot_widget: pg.PlotWidget) -> QWidget:
+        """Wrap a PlotWidget in a container that exposes Y-axis range controls."""
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # ── Y-range header ──────────────────────────────────────────────
+        header = QWidget()
+        header.setFixedHeight(26)
+        header.setStyleSheet("background: #f5f5f5; border-bottom: 1px solid #ddd;")
+        h_layout = QHBoxLayout(header)
+        h_layout.setContentsMargins(4, 2, 4, 2)
+        h_layout.setSpacing(4)
+
+        h_layout.addWidget(QLabel("Y (Hz):"))
+
+        y_min_spin = QDoubleSpinBox()
+        y_min_spin.setRange(-1e9, 1e9)
+        y_min_spin.setDecimals(1)
+        y_min_spin.setFixedWidth(72)
+        y_min_spin.setToolTip("Frequency axis minimum (Hz)")
+        h_layout.addWidget(y_min_spin)
+
+        h_layout.addWidget(QLabel("–"))
+
+        y_max_spin = QDoubleSpinBox()
+        y_max_spin.setRange(-1e9, 1e9)
+        y_max_spin.setDecimals(1)
+        y_max_spin.setFixedWidth(72)
+        y_max_spin.setToolTip("Frequency axis maximum (Hz)")
+        h_layout.addWidget(y_max_spin)
+
+        set_btn = QPushButton("Set")
+        set_btn.setFixedWidth(36)
+        set_btn.setFixedHeight(20)
+        set_btn.setToolTip("Apply Y-axis range to this spectrogram")
+        h_layout.addWidget(set_btn)
+        h_layout.addStretch()
+
+        layout.addWidget(header)
+        layout.addWidget(plot_widget, stretch=1)
+
+        # ── wire up interactions ────────────────────────────────────────
+        view_box = plot_widget.getViewBox()
+
+        def _apply_range():
+            lo = y_min_spin.value()
+            hi = y_max_spin.value()
+            if lo >= hi:
+                return
+            x_min, x_max = view_box.viewRange()[0]
+            view_box.setYRange(lo, hi, padding=0)
+            view_box.setXRange(x_min, x_max, padding=0)
+
+        def _sync_spinboxes(view_box_ref, ranges):
+            y_lo, y_hi = ranges[1]
+            y_min_spin.blockSignals(True)
+            y_max_spin.blockSignals(True)
+            y_min_spin.setValue(y_lo)
+            y_max_spin.setValue(y_hi)
+            y_min_spin.blockSignals(False)
+            y_max_spin.blockSignals(False)
+
+        set_btn.clicked.connect(_apply_range)
+        y_min_spin.editingFinished.connect(_apply_range)
+        y_max_spin.editingFinished.connect(_apply_range)
+        view_box.sigRangeChanged.connect(_sync_spinboxes)
+
+        # Initialise spinboxes to current view range
+        y_lo, y_hi = view_box.viewRange()[1]
+        y_min_spin.setValue(y_lo)
+        y_max_spin.setValue(y_hi)
+
+        return container
     
     def set_parameters(self, window_size: int, overlap: float, window_type: str, 
                       use_db: bool = True, db_ref: float = 1e-10, 
@@ -999,32 +1082,23 @@ class SpectrogramWidget(QWidget):
         """Autoscale the Y-axis (frequency axis) to fit visible data with 5% padding (preserves X-axis range)."""
         for i, plot_widget in enumerate(self.plot_widgets):
             view_box = plot_widget.getViewBox()
-            if view_box and i < len(self.image_items):
-                # Get current X-axis range (visible time segment)
-                x_range = view_box.viewRange()[0]
-                x_min, x_max = x_range[0], x_range[1]
-                
-                # For spectrogram, we just want to fit the frequency axis to the data
-                # The frequency axis should show the full frequency range of the STFT
-                # So we'll use autoRange for Y but preserve X
-                y_range_before = view_box.viewRange()[1]
-                
-                # Autorange to get the proper frequency axis fit
-                view_box.autoRange(padding=0.02)
-                
-                # Get the autoranged Y values
-                y_range = view_box.viewRange()[1]
-                y_min, y_max = y_range[0], y_range[1]
-                
-                # Apply 5% padding to expand the Y-axis range
-                y_center = (y_min + y_max) / 2
-                y_range_size = y_max - y_min
-                y_min_scaled = y_center - (y_range_size / 2) * 1.05
-                y_max_scaled = y_center + (y_range_size / 2) * 1.05                
-                view_box.setYRange(y_min_scaled, y_max_scaled, padding=0)
-                
-                # Always preserve the X-axis range
-                view_box.setXRange(x_min, x_max, padding=0)
+            if not (view_box and i < len(self.image_items)):
+                continue
+            x_min, x_max = view_box.viewRange()[0]
+
+            # Read the frequency bounds directly from the image geometry —
+            # avoids the expensive autoRange() + repaint cycle.
+            rect = self.image_items[i].boundingRect()
+            mapped = self.image_items[i].mapRectToView(rect)
+            y_min = mapped.top()
+            y_max = mapped.bottom()
+            if y_min > y_max:
+                y_min, y_max = y_max, y_min
+
+            y_center = (y_min + y_max) / 2
+            y_range_size = (y_max - y_min) * 1.05
+            view_box.setYRange(y_center - y_range_size / 2, y_center + y_range_size / 2, padding=0)
+            view_box.setXRange(x_min, x_max, padding=0)
     
     def set_active_label(self, label: str, color: tuple):
         """Set the active annotation label and color."""

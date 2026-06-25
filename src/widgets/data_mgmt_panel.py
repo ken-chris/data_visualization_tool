@@ -10,6 +10,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
     QColorDialog,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -207,6 +208,8 @@ class DataMgmtPanel(QWidget):
     """
 
     load_data_requested = pyqtSignal()
+    load_config_requested = pyqtSignal()
+    clear_all_data_requested = pyqtSignal()
     # Emits list of dicts: {dataset_id, channel_idx, name, fft, stft}
     channels_applied = pyqtSignal(list)
     channel_deleted = pyqtSignal(str, int)
@@ -225,10 +228,28 @@ class DataMgmtPanel(QWidget):
         outer.setContentsMargins(4, 4, 4, 4)
         outer.setSpacing(6)
 
-        load_btn = QPushButton("⊕  Load Data")
+        btn_row = QWidget()
+        btn_layout = QHBoxLayout(btn_row)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(4)
+
+        config_btn = QPushButton("📂  Load Config")
+        config_btn.setToolTip("Load a configuration file (same as File → Load Config)")
+        config_btn.clicked.connect(self.load_config_requested)
+        btn_layout.addWidget(config_btn)
+        self._config_btn = config_btn
+
+        load_btn = QPushButton("💻  Load Data")
         load_btn.setToolTip("Open a data file (same as File → Open)")
         load_btn.clicked.connect(self.load_data_requested)
-        outer.addWidget(load_btn)
+        btn_layout.addWidget(load_btn)
+
+        clear_btn = QPushButton("💣  Clear All Data")
+        clear_btn.setToolTip("Remove all loaded datasets and plot boxes (config is preserved)")
+        clear_btn.clicked.connect(self.clear_all_data_requested)
+        btn_layout.addWidget(clear_btn)
+
+        outer.addWidget(btn_row)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -246,6 +267,10 @@ class DataMgmtPanel(QWidget):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def mark_config_loaded(self):
+        """Update the Load Config button to indicate a config is active."""
+        self._config_btn.setText("📂  Load Config ✅")
 
     def refresh(self, plot_boxes: list, datasets: Dict[str, SensorData]):
         """Rebuild the panel from current plot boxes and datasets."""
@@ -319,6 +344,23 @@ class DataMgmtPanel(QWidget):
                 row = _TraceRow(dataset_id, channel_idx, ch_name, trace["color"])
                 trace_rows.append(row)
                 section.add_widget(row)
+
+        # Plot type selector
+        type_row = QWidget()
+        type_layout = QHBoxLayout(type_row)
+        type_layout.setContentsMargins(0, 0, 0, 0)
+        type_layout.setSpacing(4)
+        type_layout.addWidget(QLabel("Plot type:"))
+        plot_type_combo = QComboBox()
+        plot_type_combo.addItems(["Line", "Scatter"])
+        plot_type_combo.setCurrentText("Line" if plot_box.plot_type == 'line' else "Scatter")
+        plot_type_combo.setToolTip("Toggle between line and scatter (no connecting lines) plot")
+        plot_type_combo.currentTextChanged.connect(
+            lambda text, pb=plot_box: pb.set_plot_type(text.lower())
+        )
+        type_layout.addWidget(plot_type_combo)
+        type_layout.addStretch()
+        section.add_widget(type_row)
 
         # Button row: Apply + Edit Channels + Duplicate + Delete
         btn_row = QWidget()

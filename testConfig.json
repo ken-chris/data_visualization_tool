@@ -1,8 +1,8 @@
 {
   "channel_names": [
-    "Channel1",
-    "Channel2",
-    "Channel3"
+    "A",
+    "B",
+    "V"
   ],
   "labels": [
     {
@@ -51,15 +51,7 @@
     "default_sample_rate": 100.0
   },
   "loaded_files": [
-    {
-      "path": "sample_sensor_data.csv",
-      "dataset_id": "sample_sensor_data.csv",
-      "channel_names": [
-        "Channel1",
-        "Channel2",
-        "Channel3"
-      ]
-    }
+
   ],
   "manipulations": [
     {

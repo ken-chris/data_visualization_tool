@@ -98,8 +98,9 @@ class FFTWidget(QWidget):
             else:
                 plot_widget.getAxis('bottom').setStyle(showValues=False)
             
-            plot_widget.setMinimumHeight(150)
+            plot_widget.setMinimumHeight(200)
             plot_widget.setAntialiasing(True)
+            plot_widget.setMenuEnabled(False)
             
             channel_layout.addWidget(plot_widget)
             

@@ -10,7 +10,7 @@ from src.models.sensor_data import SensorData
 from src.models.annotation import Annotation
 
 
-def load_csv(filepath: str) -> SensorData:
+def load_csv(filepath: str, progress_callback=None) -> SensorData:
     """
     Load sensor data from CSV file.
 
@@ -25,6 +25,8 @@ def load_csv(filepath: str) -> SensorData:
 
     Args:
         filepath: Path to CSV file
+        progress_callback: Optional callable(current: int, total: int) called
+            once per column during the channel-processing phase.
 
     Returns:
         SensorData object
@@ -45,7 +47,9 @@ def load_csv(filepath: str) -> SensorData:
     numeric_arrays: List[np.ndarray] = []
     string_columns: Dict[str, np.ndarray] = {}
 
-    for col in data_df.columns:
+    all_cols = list(data_df.columns)
+    total = len(all_cols)
+    for i, col in enumerate(all_cols):
         coerced = pd.to_numeric(data_df[col], errors='coerce')
         if coerced.isna().all():
             # Entirely non-numeric — store as strings
@@ -53,6 +57,8 @@ def load_csv(filepath: str) -> SensorData:
         else:
             numeric_cols.append(col)
             numeric_arrays.append(coerced.values.astype(float))
+        if progress_callback is not None:
+            progress_callback(i + 1, total)
 
     if numeric_arrays:
         data = np.column_stack(numeric_arrays)
@@ -245,12 +251,14 @@ def load_annotations_json(filepath: str) -> List[Annotation]:
     return annotations
 
 
-def load_data(filepath: str) -> SensorData:
+def load_data(filepath: str, progress_callback=None) -> SensorData:
     """
     Auto-detect file format and load sensor data.
     
     Args:
         filepath: Path to data file
+        progress_callback: Optional callable(current: int, total: int) passed
+            to format-specific loaders that support per-channel progress.
         
     Returns:
         SensorData object
@@ -262,7 +270,7 @@ def load_data(filepath: str) -> SensorData:
     suffix = path.suffix.lower()
     
     if suffix == '.csv':
-        return load_csv(filepath)
+        return load_csv(filepath, progress_callback=progress_callback)
     elif suffix == '.npy':
         return load_numpy(filepath)
     elif suffix in ['.h5', '.hdf5']:

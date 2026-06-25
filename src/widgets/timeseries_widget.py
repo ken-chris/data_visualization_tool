@@ -709,25 +709,33 @@ class TimeSeriesWidget(QWidget):
             plot_widget = box.get_plot_widget()
             view_box = plot_widget.getViewBox()
             x_min, x_max = view_box.viewRange()[0]
-            visible_segments = []
-            for plot_item in box._plot_items.values():
-                x_data, y_data = plot_item.getData()
-                if x_data is None or y_data is None or len(y_data) == 0:
+
+            y_min_global = np.inf
+            y_max_global = -np.inf
+
+            for (dataset_id, channel_idx) in box._plot_items:
+                sensor_data = box.datasets.get(dataset_id)
+                if sensor_data is None:
                     continue
-                mask = (x_data >= x_min) & (x_data <= x_max)
-                visible_y_data = y_data[mask]
-                if len(visible_y_data) > 0:
-                    visible_segments.append(visible_y_data)
-            if visible_segments:
-                combined = np.concatenate(visible_segments)
-                y_min = float(np.min(combined))
-                y_max = float(np.max(combined))
-                y_range = y_max - y_min
+                timestamps = sensor_data.timestamps
+                # O(log n) slice instead of full boolean mask
+                i_lo = np.searchsorted(timestamps, x_min, side='left')
+                i_hi = np.searchsorted(timestamps, x_max, side='right')
+                if i_lo >= i_hi:
+                    continue
+                y_slice = sensor_data.get_channel(channel_idx)[i_lo:i_hi]
+                if len(y_slice) == 0:
+                    continue
+                y_min_global = min(y_min_global, float(np.min(y_slice)))
+                y_max_global = max(y_max_global, float(np.max(y_slice)))
+
+            if np.isfinite(y_min_global) and np.isfinite(y_max_global):
+                y_range = y_max_global - y_min_global
                 if y_range > 0:
                     padding = y_range * 0.05
-                    view_box.setYRange(y_min - padding, y_max + padding, padding=0)
+                    view_box.setYRange(y_min_global - padding, y_max_global + padding, padding=0)
                 else:
-                    view_box.setYRange(y_min - 1, y_max + 1, padding=0)
+                    view_box.setYRange(y_min_global - 1, y_max_global + 1, padding=0)
             else:
                 view_box.autoRange(padding=0.02)
             view_box.setXRange(x_min, x_max, padding=0)

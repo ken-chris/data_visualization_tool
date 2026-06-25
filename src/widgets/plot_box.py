@@ -31,6 +31,7 @@ class PlotBox(QWidget):
         self.datasets = datasets
         self.traces: list[dict] = []
         self._plot_items: dict[tuple[str, int], pg.PlotDataItem] = {}
+        self.plot_type: str = 'line'  # 'line' or 'scatter'
 
         self.name_label = QLabel(box_name)
         self.gear_button = QPushButton('\u2699')
@@ -41,7 +42,6 @@ class PlotBox(QWidget):
         title_layout.setContentsMargins(0, 0, 0, 0)
         title_layout.addWidget(self.name_label)
         title_layout.addStretch()
-        title_layout.addWidget(self.gear_button)
 
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground('w')
@@ -49,6 +49,7 @@ class PlotBox(QWidget):
         self.plot_widget.setLabel('bottom', 'Time', units='s')
         self.plot_widget.setAntialiasing(True)
         self.plot_widget.setMinimumHeight(22)
+        self.plot_widget.setMenuEnabled(False)
 
         self.region_item = pg.LinearRegionItem(
             brush=pg.mkBrush(100, 100, 200, 50),
@@ -57,7 +58,56 @@ class PlotBox(QWidget):
         self.region_item.setZValue(1000)
         self.plot_widget.addItem(self.region_item)
 
-        self.plot_widget.getViewBox().sigRangeChanged.connect(self._emit_view_range_changed)
+        view_box = self.plot_widget.getViewBox()
+        view_box.sigRangeChanged.connect(self._emit_view_range_changed)
+
+        # Y-range spinboxes in the title row
+        self._y_min_spin = QDoubleSpinBox()
+        self._y_min_spin.setRange(-1e9, 1e9)
+        self._y_min_spin.setDecimals(3)
+        self._y_min_spin.setFixedWidth(80)
+        self._y_min_spin.setToolTip("Y-axis minimum")
+
+        self._y_max_spin = QDoubleSpinBox()
+        self._y_max_spin.setRange(-1e9, 1e9)
+        self._y_max_spin.setDecimals(3)
+        self._y_max_spin.setFixedWidth(80)
+        self._y_max_spin.setToolTip("Y-axis maximum")
+
+        y_set_btn = QPushButton("Set Y")
+        y_set_btn.setFixedWidth(44)
+        y_set_btn.setFixedHeight(20)
+        y_set_btn.setToolTip("Apply Y-axis range")
+
+        title_layout.addWidget(QLabel("Y:"))
+        title_layout.addWidget(self._y_min_spin)
+        title_layout.addWidget(QLabel("–"))
+        title_layout.addWidget(self._y_max_spin)
+        title_layout.addWidget(y_set_btn)
+        title_layout.addWidget(self.gear_button)
+
+        def _apply_y():
+            lo = self._y_min_spin.value()
+            hi = self._y_max_spin.value()
+            if lo >= hi:
+                return
+            x_min, x_max = view_box.viewRange()[0]
+            view_box.setYRange(lo, hi, padding=0)
+            view_box.setXRange(x_min, x_max, padding=0)
+
+        def _sync_y(vb, ranges):
+            lo, hi = ranges[1]
+            self._y_min_spin.blockSignals(True)
+            self._y_max_spin.blockSignals(True)
+            self._y_min_spin.setValue(lo)
+            self._y_max_spin.setValue(hi)
+            self._y_min_spin.blockSignals(False)
+            self._y_max_spin.blockSignals(False)
+
+        y_set_btn.clicked.connect(_apply_y)
+        self._y_min_spin.editingFinished.connect(_apply_y)
+        self._y_max_spin.editingFinished.connect(_apply_y)
+        view_box.sigRangeChanged.connect(_sync_y)
 
         # Legend bar below the plot
         self._legend_widget = QWidget()
@@ -141,14 +191,34 @@ class PlotBox(QWidget):
         channel_idx = trace['channel_idx']
         if channel_idx < 0 or channel_idx >= sensor_data.n_channels:
             return
-        plot_item = self.plot_widget.plot(
-            sensor_data.timestamps,
-            sensor_data.get_channel(channel_idx),
-            pen=self._make_pen(trace['color'], trace['opacity']),
-        )
+        if self.plot_type == 'scatter':
+            r, g, b = trace['color']
+            alpha = max(0, min(255, int(trace['opacity'] * 255)))
+            plot_item = self.plot_widget.plot(
+                sensor_data.timestamps,
+                sensor_data.get_channel(channel_idx),
+                pen=None,
+                symbol='o',
+                symbolSize=5,
+                symbolPen=pg.mkPen(color=(r, g, b, alpha), width=1),
+                symbolBrush=pg.mkBrush(r, g, b, alpha),
+            )
+        else:
+            plot_item = self.plot_widget.plot(
+                sensor_data.timestamps,
+                sensor_data.get_channel(channel_idx),
+                pen=self._make_pen(trace['color'], trace['opacity']),
+            )
         plot_item.setClipToView(True)
         plot_item.setDownsampling(auto=True, method='peak')
         self._plot_items[self._get_trace_key(trace['dataset_id'], channel_idx)] = plot_item
+
+    def set_plot_type(self, plot_type: str):
+        """Switch between 'line' and 'scatter' and re-render all traces."""
+        if plot_type not in ('line', 'scatter'):
+            return
+        self.plot_type = plot_type
+        self.refresh_traces(self.datasets)
 
     def add_trace(self, dataset_id: str, channel_idx: int, color: tuple[int, int, int], opacity: float):
         key = self._get_trace_key(dataset_id, channel_idx)
